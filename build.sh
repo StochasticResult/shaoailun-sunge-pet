@@ -63,7 +63,7 @@ compile() {
         die "缺少 Assets/face.png，素材不完整。用 Finder 双击解压，别用终端 unzip（对中文文件名会报错并漏文件）。"
     fi
     cp -R Assets/. "$BUNDLE/Contents/Resources/"
-    cp LICENSE LICENSE-SunPet "$BUNDLE/Contents/Resources/"
+    cp LICENSE NOTICE.md licenses/SunPet-MIT.txt "$BUNDLE/Contents/Resources/"
     cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -81,6 +81,7 @@ compile() {
 <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict></plist>
 PLIST
+    xattr -cr "$BUNDLE"
     codesign --force --sign - "$BUNDLE" >/dev/null 2>&1 || die "本地签名失败。"
 }
 
@@ -91,7 +92,7 @@ self_test() {
         printf '%s\n' "$out" >&2
         die "自检未通过（上面每行 FAIL 都指向具体环节）。若报素材缺失，请重新完整下载素材。"
     fi
-    printf '%s\n' "$out" | tail -1
+    if [ "$(printf '%s\n' "$out" | tail -1)" != "PASS" ]; then die "自检未报告 PASS。"; fi
 }
 
 package() {
@@ -120,3 +121,4 @@ if [ "$SELF_TEST" = "1" ]; then self_test; fi
 if [ "$PACKAGE" = "1" ]; then package; fi
 printf '完成：%s\n' "$BUNDLE"
 printf '安装：./install.sh（或把 app 拖进「应用程序」）\n'
+if [ "$SELF_TEST" = "1" ]; then printf 'PASS\n'; fi

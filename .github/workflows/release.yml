@@ -68,3 +68,38 @@ jobs:
             ```sh
             shasum -a 256 -c ShaolanPet-*.sha256
             ```
+
+  windows:
+    # Wait for the Mac job to create the Release before adding Windows assets.
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: 构建、自检并打包 Windows 版
+        shell: pwsh
+        run: |
+          dotnet publish Windows/ShaolanPet.Windows.csproj -c Release -r win-x64 --self-contained true -o dist/windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $test = Start-Process -FilePath "$PWD/dist/windows/ShaolanPet.exe" -ArgumentList '--self-test' -PassThru -Wait
+          if ($test.ExitCode -ne 0) { throw "Windows 自检失败：$($test.ExitCode)" }
+          $version = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { $env:GITHUB_REF_NAME.TrimStart('v') }
+          $zip = "ShaolanPet-$version-Windows-x64.zip"
+          Compress-Archive -Path dist/windows/* -DestinationPath "dist/$zip"
+          $hash = (Get-FileHash "dist/$zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zip" | Set-Content -Encoding ascii "dist/ShaolanPet-$version-Windows-x64.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShaolanPet-Windows-x64
+          path: |
+            dist/*-Windows-x64.zip
+            dist/*-Windows-x64.sha256
+      - name: 添加到 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/*-Windows-x64.zip
+            dist/*-Windows-x64.sha256

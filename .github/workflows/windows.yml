@@ -1,0 +1,31 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: 构建并自检
+        shell: pwsh
+        run: |
+          dotnet publish Windows/ShaolanPet.Windows.csproj -c Release -r win-x64 --self-contained true -o dist/windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $test = Start-Process -FilePath "$PWD/dist/windows/ShaolanPet.exe" -ArgumentList '--self-test' -PassThru -Wait
+          if ($test.ExitCode -ne 0) { throw "Windows 自检失败：$($test.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShaolanPet-Windows-x64
+          path: dist/windows/
+          if-no-files-found: error

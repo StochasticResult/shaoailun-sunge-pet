@@ -29,13 +29,13 @@
 
 ## 安装
 
-要直接下载安装包，去 [Releases](https://github.com/Ganzhe2028/ShaolanPet/releases/latest) 下最新的 `.dmg`。下面是源码构建。
+要直接下载安装包，去 [Releases](https://github.com/StochasticResult/ShaolanPet-Windows/releases/latest) 下最新的 `.dmg`。下面是源码构建。
 
 需要 **Apple Silicon Mac** 和 **macOS 14 或更新版本**。
 
 ```sh
-git clone https://github.com/Ganzhe2028/ShaolanPet.git
-cd ShaolanPet
+git clone https://github.com/StochasticResult/ShaolanPet-Windows.git
+cd ShaolanPet-Windows
 ./build.sh          # 编译 + 跑一遍自检，最后一行 PASS 才算过
 open build/薄肌桌宠.app
 ```
@@ -47,6 +47,19 @@ open build/薄肌桌宠.app
 ```
 
 不需要 Xcode 工程，`swiftc` 直接编，没有任何第三方依赖。
+
+## Windows 版
+
+Windows 10/11 64 位版使用 .NET 8 和 WPF，保留点击播放、拖动、右键设置、轮播筛选、固定句子及设置记忆。独立运行，不需要安装 .NET；目前不支持 macOS 桌宠之间的联动。设置存放在 `%LOCALAPPDATA%\ShaolanPet\settings.json`。
+
+在 Windows 上安装 .NET 8 SDK 后构建：
+
+```powershell
+dotnet publish Windows/ShaolanPet.Windows.csproj -c Release -r win-x64 --self-contained true -o dist/windows
+.\dist\windows\ShaolanPet.exe
+```
+
+将整个 `dist/windows` 文件夹一起分发（含 Assets），不要只复制 exe。推送 main 后 [Windows 构建](https://github.com/StochasticResult/ShaolanPet-Windows/actions/workflows/windows.yml) 会运行自检并提供压缩包；版本标签发布时，Windows 包也会上传到 Release。自检只检查素材和随机轮播，不能代替 Windows 上的交互、播放实测。
 
 ## 用法
 

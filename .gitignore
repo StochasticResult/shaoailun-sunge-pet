@@ -10,3 +10,6 @@ Work/preview.png
 Work/transcript.json
 .DS_Store
 dist/
+
+Windows/bin/
+Windows/obj/
