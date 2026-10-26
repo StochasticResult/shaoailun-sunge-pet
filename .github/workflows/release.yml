@@ -57,7 +57,9 @@ jobs:
             dist/*.dmg
             dist/*.sha256
           body: |
-            下载 `ShaolanPet-*.dmg`，打开后把「薄肌桌宠.app」拖进「应用程序」。
+            Windows：下载 `ShaolanPet-*-Windows-x64.zip`，解压整个文件夹后双击 `ShaolanPet.exe`。
+
+            Mac：下载 `ShaolanPet-*.dmg`，打开后把「薄肌桌宠.app」拖进「应用程序」。
 
             也可以下载 zip，但请用 Finder 双击解压；终端 `unzip` 处理中文文件名会报 `write error (disk full?)` 并漏掉文件。
 
