@@ -92,6 +92,7 @@ static class Program
         {
             var clips = Pets.ToDictionary(p => p.Id, p => p.LoadClips());
             if (args.Contains("--self-test")) return SelfTest(clips);
+            if (args.Contains("--playback-test")) return PlaybackTest(clips);
             using var mutex = new System.Threading.Mutex(true, @"Local\ShaolanPet.Windows", out bool first);
             if (!first) return 0;
             var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
@@ -100,10 +101,42 @@ static class Program
         }
         catch (Exception ex)
         {
-            if (args.Contains("--self-test")) Console.Error.WriteLine("FAIL: " + ex);
+            if (args.Contains("--self-test") || args.Contains("--playback-test")) Console.Error.WriteLine("FAIL: " + ex);
             else MessageBox.Show("桌宠启动失败：" + ex.Message, "桌宠控制面板", MessageBoxButton.OK, MessageBoxImage.Error);
             return 1;
         }
+    }
+    // Exercise real MediaPlayer completion events and the full reply chain on Windows.
+    static int PlaybackTest(Dictionary<string, List<Clip>> allClips)
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), "ShaolanPet-playback-test-" + Guid.NewGuid());
+        SettingsRoot = testRoot;
+        try
+        {
+            var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
+            var panel = new ControlPanel(allClips);
+            var heard = new List<string>();
+            Exception? failure = null;
+            var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+            timeout.Tick += (_, _) => { timeout.Stop(); failure = new TimeoutException("音频播放或接话超时：" + string.Join(" → ", heard)); panel.Close(); };
+            panel.Loaded += (_, _) => {
+                try {
+                    panel.StartPlaybackTest(turn => {
+                        heard.Add(turn.Speaker);
+                        if (heard.Count != 4) return;
+                        if (!heard.SequenceEqual(new[] { "shaolan", "sunpet", "fengge", "sunpet" }))
+                            failure = new InvalidDataException("接话顺序错误：" + string.Join(" → ", heard));
+                        timeout.Stop(); panel.Dispatcher.BeginInvoke(new Action(panel.Close));
+                    });
+                    timeout.Start();
+                }
+                catch (Exception e) { failure = e; panel.Close(); }
+            };
+            app.Run(panel);
+            if (failure != null) throw new InvalidDataException("Windows 播放联动测试失败", failure);
+            return 0;
+        }
+        finally { if (System.IO.Directory.Exists(testRoot)) System.IO.Directory.Delete(testRoot, true); }
     }
     static int SelfTest(Dictionary<string, List<Clip>> allClips)
     {
@@ -144,6 +177,7 @@ static class Program
             if (bag.Next(new[] { ids[0] }) != ids[0] || bag.Next(Array.Empty<int>()) != null)
                 throw new InvalidDataException("轮播筛选失败");
         }
+        ConversationTests.Verify();
         var testRoot = Path.Combine(Path.GetTempPath(), "ShaolanPet-self-test-" + Guid.NewGuid());
         SettingsRoot = testRoot;
         try
@@ -171,7 +205,10 @@ sealed class PetWindow : Window
     private readonly Settings settings;
     private readonly ControlPanel panel;
     private readonly ShuffleBag bag = new();
-    private readonly MediaPlayer player = new();
+    private MediaPlayer? player;
+    private ConversationTurn? playingTurn;
+    private bool playing;
+    private readonly ShuffleBag replyBag = new();
     private readonly Image face = new();
     private readonly TextBlock caption = new();
     private readonly DispatcherTimer captionTimer = new();
@@ -203,8 +240,6 @@ sealed class PetWindow : Window
         bubble.SetBinding(VisibilityProperty, new System.Windows.Data.Binding(nameof(Visibility)) { Source = caption });
         grid.Children.Add(bubble); Content = grid;
         captionTimer.Tick += (_, _) => { captionTimer.Stop(); caption.Visibility = Visibility.Collapsed; };
-        player.MediaEnded += (_, _) => Animate(false);
-        player.MediaFailed += (_, _) => { Animate(false); ShowCaption("音频读取失败", 4); };
         grid.MouseLeftButtonDown += (_, e) => { mouseDown = e.GetPosition(this); dragging = false; grid.CaptureMouse(); };
         grid.MouseMove += (_, e) => {
             if (e.LeftButton != MouseButtonState.Pressed || !grid.IsMouseCaptured) return;
@@ -217,15 +252,22 @@ sealed class PetWindow : Window
         grid.MouseLeftButtonUp += (_, _) => { if (grid.IsMouseCaptured) grid.ReleaseMouseCapture(); if (!dragging) PlayNext(); };
         grid.MouseRightButtonUp += (_, e) => { grid.ContextMenu = MakeMenu(); grid.ContextMenu.IsOpen = true; e.Handled = true; };
         Loaded += (_, _) => { RestorePosition(); ShowCaption("点我说一句 · 右键设置", 5); };
-        Closed += (_, _) => { SavePosition(); player.Close(); panel.PetClosed(pet.Id); };
+        Closed += (_, _) => { StopPlayback(); SavePosition(); panel.PetClosed(pet.Id); };
     }
     private void Save()
     {
         try { pet.SaveSettings(settings); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { ShowCaption("设置保存失败", 3); }
     }
-    public void SetVolume(double volume) { settings.Volume = Math.Clamp(volume, 0, 1); player.Volume = settings.Volume; }
-    public void StopPlayback() { player.Stop(); Animate(false); captionTimer.Stop(); caption.Visibility = Visibility.Collapsed; }
+    public void SetVolume(double volume) { settings.Volume = Math.Clamp(volume, 0, 1); if (player != null) player.Volume = settings.Volume; }
+    public bool IsPlaying => playing;
+    public void StopPlayback()
+    {
+        if (playingTurn is { } turn) panel.CancelIfCurrent(turn);
+        playingTurn = null; playing = false;
+        player?.Stop(); player?.Close(); player = null;
+        Animate(false); captionTimer.Stop(); caption.Visibility = Visibility.Collapsed;
+    }
     private void RestorePosition()
     {
         var area = SystemParameters.WorkArea;
@@ -251,11 +293,50 @@ sealed class PetWindow : Window
         var clip = clips.FirstOrDefault(c => c.Id == id);
         if (clip != null) Play(clip);
     }
+    public void PlayFirstForTest() => Play(clips[0]);
     private void Play(Clip clip)
     {
-        player.Stop(); player.Close(); Animate(false);
-        player.Open(new Uri(Path.Combine(pet.AssetDirectory, "Clips", clip.File))); player.Volume = settings.Volume; player.Play();
-        lastPlayed = clip.Id; Animate(true); ShowCaption(clip.Label, clip.Duration + .4);
+        var turn = panel.StartConversation(pet.Id);
+        StartPlayback(clip, turn);
+    }
+    public bool PlayReply(ConversationTurn turn)
+    {
+        // SunPet's original short response pool; respect the user's rotation exclusions.
+        int[] shortReplies = { 1, 2, 4, 11, 13, 14 };
+        var available = clips.Where(c => !settings.ExcludedIds!.Contains(c.Id) &&
+            (pet.Id != "sunpet" || shortReplies.Contains(c.Id))).Select(c => c.Id).ToArray();
+        var id = replyBag.Next(available);
+        var clip = clips.FirstOrDefault(c => c.Id == id);
+        if (clip == null || playing) return false;
+        return StartPlayback(clip, turn);
+    }
+    private bool StartPlayback(Clip clip, ConversationTurn turn)
+    {
+        StopPlayback();
+        try
+        {
+            var nextPlayer = new MediaPlayer();
+            player = nextPlayer; playingTurn = turn; playing = true;
+            nextPlayer.MediaEnded += (_, _) => {
+                if (!ReferenceEquals(player, nextPlayer) || playingTurn != turn) return;
+                playing = false; playingTurn = null; Animate(false);
+                panel.ConversationEnded(turn);
+            };
+            nextPlayer.MediaFailed += (_, _) => {
+                if (!ReferenceEquals(player, nextPlayer) || playingTurn != turn) return;
+                playing = false; playingTurn = null; Animate(false);
+                panel.CancelIfCurrent(turn); ShowCaption("音频读取失败", 4);
+            };
+            nextPlayer.Open(new Uri(Path.Combine(pet.AssetDirectory, "Clips", clip.File)));
+            nextPlayer.Volume = settings.Volume; nextPlayer.Play();
+            lastPlayed = clip.Id; Animate(true); ShowCaption(clip.Label, clip.Duration + .4);
+            return true;
+        }
+        catch (Exception e) when (e is IOException or InvalidOperationException or NotSupportedException)
+        {
+            playing = false; playingTurn = null; player?.Close(); player = null;
+            panel.CancelIfCurrent(turn); Animate(false); ShowCaption("音频读取失败", 4); return false;
+        }
     }
     private MenuItem Item(string title, Action action, bool isChecked = false)
     {

@@ -24,6 +24,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $test = Start-Process -FilePath "$PWD/dist/windows/ShaolanPet.exe" -ArgumentList '--self-test' -PassThru -Wait
           if ($test.ExitCode -ne 0) { throw "Windows 自检失败：$($test.ExitCode)" }
+      - name: 测试 Windows 音频播放与自动接话
+        shell: pwsh
+        run: |
+          $test = Start-Process -FilePath "$PWD/dist/windows/ShaolanPet.exe" -ArgumentList '--playback-test' -PassThru -Wait
+          if ($test.ExitCode -ne 0) { throw "Windows 音频联动测试失败：$($test.ExitCode)" }
       - uses: actions/upload-artifact@v4
         with:
           name: ShaolanPet-Windows-x64

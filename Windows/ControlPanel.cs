@@ -1,9 +1,15 @@
 using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 
 namespace ShaolanPet;
+
+sealed class PanelSettings
+{
+    public bool AutoReply { get; set; } = true;
+}
 
 sealed class ControlPanel : Window
 {
@@ -13,14 +19,22 @@ sealed class ControlPanel : Window
     private readonly Dictionary<string, CheckBox> switches = new();
     private readonly Dictionary<string, Slider> sliders = new();
     private readonly Dictionary<string, TextBlock> values = new();
+    private readonly PanelSettings panelSettings;
+    private readonly Conversation conversation;
+    private readonly CheckBox autoReply;
+    private static string PanelSettingsPath => Path.Combine(Program.SettingsRoot, "panel.json");
     private bool shuttingDown;
     private bool updating;
 
     public ControlPanel(Dictionary<string, List<Clip>> clips)
     {
         this.clips = clips;
+        panelSettings = LoadPanelSettings();
+        conversation = new Conversation(panelSettings.AutoReply,
+            id => windows.TryGetValue(id, out var window) && !window.IsPlaying,
+            turn => windows.TryGetValue(turn.Speaker, out var window) && window.PlayReply(turn));
         Title = "桌宠控制面板";
-        Width = 460; Height = 440; MinWidth = 420; MinHeight = 400;
+        Width = 460; Height = 480; MinWidth = 420; MinHeight = 400;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = new SolidColorBrush(Color.FromRgb(248, 249, 252));
         var page = new StackPanel { Margin = new Thickness(24, 20, 24, 18) };
@@ -57,17 +71,52 @@ sealed class ControlPanel : Window
             row.Children.Add(label); row.Children.Add(slider); row.Children.Add(value); content.Children.Add(row);
             card.Child = content; page.Children.Add(card);
         }
+        autoReply = new CheckBox { Content = "自动接话", IsChecked = panelSettings.AutoReply, Margin = new Thickness(2, 4, 0, 6), FontSize = 14 };
+        autoReply.Checked += (_, _) => SetAutoReply(true);
+        autoReply.Unchecked += (_, _) => SetAutoReply(false);
+        page.Children.Add(autoReply);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 0) };
         var stop = new Button { Content = "停止所有声音", Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 10, 0) };
-        stop.Click += (_, _) => { foreach (var window in windows.Values) window.StopPlayback(); };
+        stop.Click += (_, _) => { conversation.Cancel(); foreach (var window in windows.Values) window.StopPlayback(); };
         var quit = new Button { Content = "退出全部", Padding = new Thickness(12, 5, 12, 5) };
         quit.Click += (_, _) => Close();
         buttons.Children.Add(stop); buttons.Children.Add(quit); page.Children.Add(buttons);
         page.Children.Add(new TextBlock { Text = "点击人物播放，拖动移动；右键可选择句子和大小。", Margin = new Thickness(0, 10, 0, 0), Foreground = Brushes.DimGray, TextWrapping = TextWrapping.Wrap });
         Content = new ScrollViewer { Content = page, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         Loaded += (_, _) => { foreach (var pet in Program.Pets) if (settings[pet.Id].Enabled) OpenPet(pet); };
-        Closing += (_, _) => { shuttingDown = true; };
+        Closing += (_, _) => { shuttingDown = true; conversation.Cancel(); };
     }
+
+    private static PanelSettings LoadPanelSettings()
+    {
+        try { return JsonSerializer.Deserialize<PanelSettings>(File.ReadAllText(PanelSettingsPath), Program.JsonOptions) ?? new(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return new(); }
+    }
+    private void SetAutoReply(bool enabled)
+    {
+        panelSettings.AutoReply = enabled;
+        conversation.SetEnabled(enabled);
+        try {
+            Directory.CreateDirectory(Program.SettingsRoot);
+            File.WriteAllText(PanelSettingsPath, JsonSerializer.Serialize(panelSettings, Program.JsonOptions));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        { MessageBox.Show("设置无法保存：" + e.Message, "桌宠控制面板", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    }
+    public ConversationTurn StartConversation(string id) => conversation.Start(id);
+    private Action<ConversationTurn>? playbackTestObserver;
+    public void ConversationEnded(ConversationTurn turn)
+    {
+        conversation.Ended(turn);
+        playbackTestObserver?.Invoke(turn);
+    }
+    public void StartPlaybackTest(Action<ConversationTurn> onEnded)
+    {
+        foreach (var window in windows.Values) window.SetVolume(0);
+        playbackTestObserver = onEnded;
+        windows["shaolan"].PlayFirstForTest();
+    }
+    public void CancelIfCurrent(ConversationTurn turn) => conversation.CancelIfCurrent(turn);
 
     private void Save(PetDefinition pet)
     {
@@ -92,6 +141,7 @@ sealed class ControlPanel : Window
     public void PetClosed(string id)
     {
         windows.Remove(id);
+        conversation.Cancel();
         if (shuttingDown) return;
         settings[id].Enabled = false;
         updating = true; switches[id].IsChecked = false; updating = false;
@@ -108,6 +158,10 @@ sealed class ControlPanel : Window
     public void VerifyControls()
     {
         if (windows.Count != Program.Pets.Length) throw new InvalidDataException("桌宠未全部启动");
+        autoReply.IsChecked = false;
+        if (LoadPanelSettings().AutoReply) throw new InvalidDataException("联动开关未保存");
+        autoReply.IsChecked = true;
+        if (!LoadPanelSettings().AutoReply) throw new InvalidDataException("联动开关未恢复");
         foreach (var pet in Program.Pets)
         {
             switches[pet.Id].IsChecked = false;

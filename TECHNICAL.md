@@ -50,7 +50,7 @@ open build/薄肌桌宠.app
 
 ## Windows 版
 
-Windows 10/11 64 位版使用 .NET 8 和 WPF，一个程序包含薄肌、太对了和峰哥，控制面板可以分别开关桌宠、调整音量或停止全部声音。每个角色支持点击播放、拖动、右键选择句子、轮播筛选、固定句子及大小设置。独立运行，不需要安装 .NET；目前 Windows 内的三个角色不会互相接话。三份设置分别存放在 `%LOCALAPPDATA%\ShaolanPet\settings.json`、`sunpet.json` 和 `fengge.json`，已有薄肌设置会保留。关闭面板退出全部程序，最小化面板后可通过任务栏恢复，也可从人物右键菜单打开。
+Windows 10/11 64 位版使用 .NET 8 和 WPF，一个程序包含薄肌、太对了和峰哥，控制面板可以分别开关桌宠、调整音量或停止全部声音。每个角色支持点击播放、拖动、右键选择句子、轮播筛选、固定句子及大小设置。独立运行，不需要安装 .NET；三个角色会在一人说完后自动接话，可在控制面板开关。三份设置分别存放在 `%LOCALAPPDATA%\ShaolanPet\settings.json`、`sunpet.json` 和 `fengge.json`，已有薄肌设置会保留。关闭面板退出全部程序，最小化面板后可通过任务栏恢复，也可从人物右键菜单打开。
 
 在 Windows 上安装 .NET 8 SDK 后构建：
 
@@ -59,7 +59,9 @@ dotnet publish Windows/ShaolanPet.Windows.csproj -c Release -r win-x64 --self-co
 .\dist\windows\ShaolanPet.exe
 ```
 
-将整个 `dist/windows` 文件夹一起分发（含 Assets），不要只复制 exe。推送 main 后 [Windows 构建](https://github.com/StochasticResult/shaoailun-sunge-pet/actions/workflows/windows.yml) 会运行自检并提供压缩包；版本标签发布时，Windows 包也会上传到 Release。自检检查三套素材、随机轮播、控制面板开关和音量保存；不能代替 Windows 上的声音播放及手动交互实测。
+将整个 `dist/windows` 文件夹一起分发（含 Assets），不要只复制 exe。推送 main 后 [Windows 构建](https://github.com/StochasticResult/shaoailun-sunge-pet/actions/workflows/windows.yml) 会运行自检并提供压缩包；版本标签发布时，Windows 包也会上传到 Release。`--self-test` 检查三套素材、随机轮播、控制面板开关、设置保存和接话规则；`--playback-test` 在 Windows 上静音播放实际音频并验证四句接话顺序。自动测试不能代替手动听音和体验。
+
+Windows 自动接话顺序与 Mac 一致：点薄肌后依次是太对了、峰哥、太对了；点峰哥后太对了接一句；点太对了不会再触发接话。只有已开启的角色能接话，接话角色没有可用的轮播句时会停止。控制面板的「自动接话」默认开启，选择会记住；停止播放、关闭角色或再次点击会取消旧的接话。Windows 合集内部直接协调语音播放完成事件，不使用 Mac 的跨进程通知；Windows 每句播放完再接，节奏与 Mac 的尾音重叠略有不同。
 
 ## 用法
 
