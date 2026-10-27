@@ -105,15 +105,17 @@ sealed class ControlPanel : Window
     }
     public ConversationTurn StartConversation(string id) => conversation.Start(id);
     private Action<ConversationTurn>? playbackTestObserver;
+    private Action<Exception>? playbackTestFailure;
     public void ConversationEnded(ConversationTurn turn)
     {
         conversation.Ended(turn);
         playbackTestObserver?.Invoke(turn);
     }
-    public void StartPlaybackTest(Action<ConversationTurn> onEnded)
+    public void NotifyPlaybackFailed(Exception error) => playbackTestFailure?.Invoke(error);
+    public void StartPlaybackTest(Action<ConversationTurn> onEnded, Action<Exception> onFailure)
     {
         foreach (var window in windows.Values) window.SetVolume(0);
-        playbackTestObserver = onEnded;
+        playbackTestObserver = onEnded; playbackTestFailure = onFailure;
         windows["shaolan"].PlayFirstForTest();
     }
     public void CancelIfCurrent(ConversationTurn turn) => conversation.CancelIfCurrent(turn);

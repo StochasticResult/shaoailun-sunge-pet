@@ -101,7 +101,11 @@ static class Program
         }
         catch (Exception ex)
         {
-            if (args.Contains("--self-test") || args.Contains("--playback-test")) Console.Error.WriteLine("FAIL: " + ex);
+            if (args.Contains("--self-test") || args.Contains("--playback-test")) {
+                Console.Error.WriteLine("FAIL: " + ex);
+                var log = Environment.GetEnvironmentVariable("SHAOLAN_TEST_LOG");
+                if (!string.IsNullOrEmpty(log)) File.WriteAllText(log, ex.ToString());
+            }
             else MessageBox.Show("桌宠启动失败：" + ex.Message, "桌宠控制面板", MessageBoxButton.OK, MessageBoxImage.Error);
             return 1;
         }
@@ -126,6 +130,9 @@ static class Program
                         if (heard.Count != 4) return;
                         if (!heard.SequenceEqual(new[] { "shaolan", "sunpet", "fengge", "sunpet" }))
                             failure = new InvalidDataException("接话顺序错误：" + string.Join(" → ", heard));
+                        timeout.Stop(); panel.Dispatcher.BeginInvoke(new Action(panel.Close));
+                    }, error => {
+                        failure = new InvalidDataException("音频播放失败，已完成：" + string.Join(" → ", heard), error);
                         timeout.Stop(); panel.Dispatcher.BeginInvoke(new Action(panel.Close));
                     });
                     timeout.Start();
@@ -322,10 +329,10 @@ sealed class PetWindow : Window
                 playing = false; playingTurn = null; Animate(false);
                 panel.ConversationEnded(turn);
             };
-            nextPlayer.MediaFailed += (_, _) => {
+            nextPlayer.MediaFailed += (_, error) => {
                 if (!ReferenceEquals(player, nextPlayer) || playingTurn != turn) return;
                 playing = false; playingTurn = null; Animate(false);
-                panel.CancelIfCurrent(turn); ShowCaption("音频读取失败", 4);
+                panel.CancelIfCurrent(turn); panel.NotifyPlaybackFailed(error.ErrorException); ShowCaption("音频读取失败", 4);
             };
             nextPlayer.Open(new Uri(Path.Combine(pet.AssetDirectory, "Clips", clip.File)));
             nextPlayer.Volume = settings.Volume; nextPlayer.Play();

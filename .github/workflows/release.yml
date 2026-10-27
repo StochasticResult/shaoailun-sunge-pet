@@ -87,8 +87,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $test = Start-Process -FilePath "$PWD/dist/windows/ShaolanPet.exe" -ArgumentList '--self-test' -PassThru -Wait
           if ($test.ExitCode -ne 0) { throw "Windows 自检失败：$($test.ExitCode)" }
+          $env:SHAOLAN_TEST_LOG = Join-Path $env:RUNNER_TEMP 'shaolan-playback-test.log'
           $test = Start-Process -FilePath "$PWD/dist/windows/ShaolanPet.exe" -ArgumentList '--playback-test' -PassThru -Wait
-          if ($test.ExitCode -ne 0) { throw "Windows 音频联动测试失败：$($test.ExitCode)" }
+          if ($test.ExitCode -ne 0) { if (Test-Path $env:SHAOLAN_TEST_LOG) { Get-Content $env:SHAOLAN_TEST_LOG }; throw "Windows 音频联动测试失败：$($test.ExitCode)" }
           $version = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { $env:GITHUB_REF_NAME.TrimStart('v') }
           $zip = "ShaolanPet-$version-Windows-x64.zip"
           Compress-Archive -Path dist/windows/* -DestinationPath "dist/$zip"
