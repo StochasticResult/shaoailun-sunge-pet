@@ -2,7 +2,7 @@
 
 <p align="center">抖音里那个点一下就开始训你的桌宠，现在住在你的电脑桌面上。</p>
 
-<p align="center">macOS 14+ · Apple Silicon ｜ Windows 10/11 · 64 位 ｜ <a href="https://github.com/StochasticResult/ShaolanPet-Windows/releases/latest"><b>下载安装包</b></a></p>
+<p align="center">macOS 14+ · Apple Silicon ｜ Windows 10/11 · 64 位 ｜ <a href="https://github.com/StochasticResult/shaoailun-sunge-pet/releases/latest"><b>下载安装包</b></a></p>
 
 <p align="center">非官方二创 · 不联网 · 不要任何权限 · 不占 Dock</p>
 
@@ -31,11 +31,11 @@ Mac 上薄肌、太对了、好事三个同时开着会互相接话，凑成一�
 
 **Mac：**先装一个就行。这三个都装，它们才会互相接话。
 
-1. 从 [Releases](https://github.com/StochasticResult/ShaolanPet-Windows/releases/latest) 下载最新的 `.dmg`
+1. 从 [Releases](https://github.com/StochasticResult/shaoailun-sunge-pet/releases/latest) 下载最新的 `.dmg`
 2. 双击打开，把 app 拖进「应用程序」
 3. 第一次打开会弹「无法验证开发者」：右键 → 打开。这只是因为没买苹果签名，不是有毒
 
-**Windows：**从 [Releases](https://github.com/StochasticResult/ShaolanPet-Windows/releases/latest) 下载 `ShaolanPet-*-Windows-x64.zip`，解压整个文件夹后双击 `ShaolanPet.exe`。
+**Windows：**从 [Releases](https://github.com/StochasticResult/shaoailun-sunge-pet/releases/latest) 下载 `ShaolanPet-*-Windows-x64.zip`，解压整个文件夹后双击 `ShaolanPet.exe`。
 
 不确定自己这台算不算 Apple Silicon：左上角苹果图标 → 关于本机，芯片写 `Apple M` 开头的就是。
 
@@ -51,6 +51,6 @@ Mac 上薄肌、太对了、好事三个同时开着会互相接话，凑成一�
 
 已经有人做出来了：[Q弹🉐皮炎克劳德](https://github.com/aurelius358/JellyPet)。
 
-想要哪个角色、装不上、有别的想法，开个 [issue](https://github.com/StochasticResult/ShaolanPet-Windows/issues)。
+想要哪个角色、装不上、有别的想法，开个 [issue](https://github.com/StochasticResult/shaoailun-sunge-pet/issues)。
 
 头像和声音的版权属于原权利人，不在 MIT 许可里，不商用。细节见 [NOTICE.md](NOTICE.md)。
