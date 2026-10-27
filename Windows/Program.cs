@@ -107,8 +107,18 @@ static class Program
                 if (!string.IsNullOrEmpty(log)) File.WriteAllText(log, ex.ToString());
             }
             else MessageBox.Show("桌宠启动失败：" + ex.Message, "桌宠控制面板", MessageBoxButton.OK, MessageBoxImage.Error);
+            // Hosted runners without an audio device cannot exercise actual playback.
+            if (args.Contains("--playback-test") && HasAudioDeviceError(ex)) return 2;
             return 1;
         }
+    }
+    private static bool HasAudioDeviceError(Exception? error)
+    {
+        while (error != null) {
+            if (error.HResult == unchecked((int)0xC00D11BA)) return true;
+            error = error.InnerException;
+        }
+        return false;
     }
     // Exercise real MediaPlayer completion events and the full reply chain on Windows.
     static int PlaybackTest(Dictionary<string, List<Clip>> allClips)
@@ -306,6 +316,17 @@ sealed class PetWindow : Window
         var turn = panel.StartConversation(pet.Id);
         StartPlayback(clip, turn);
     }
+    public void CompletePlaybackForTest()
+    {
+        if (!panel.SimulatedPlayback) throw new InvalidOperationException("仅供自检");
+        if (playingTurn is { } turn) FinishPlayback(turn);
+    }
+    private void FinishPlayback(ConversationTurn turn)
+    {
+        if (playingTurn != turn) return;
+        playing = false; playingTurn = null; Animate(false);
+        panel.ConversationEnded(turn);
+    }
     public bool PlayReply(ConversationTurn turn)
     {
         // SunPet's original short response pool; respect the user's rotation exclusions.
@@ -322,12 +343,12 @@ sealed class PetWindow : Window
         StopPlayback();
         try
         {
+            if (panel.SimulatedPlayback) { playingTurn = turn; playing = true; return true; }
             var nextPlayer = new MediaPlayer();
             player = nextPlayer; playingTurn = turn; playing = true;
             nextPlayer.MediaEnded += (_, _) => {
                 if (!ReferenceEquals(player, nextPlayer) || playingTurn != turn) return;
-                playing = false; playingTurn = null; Animate(false);
-                panel.ConversationEnded(turn);
+                FinishPlayback(turn);
             };
             nextPlayer.MediaFailed += (_, error) => {
                 if (!ReferenceEquals(player, nextPlayer) || playingTurn != turn) return;

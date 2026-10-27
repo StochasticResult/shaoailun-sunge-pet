@@ -23,6 +23,7 @@ sealed class ControlPanel : Window
     private readonly Conversation conversation;
     private readonly CheckBox autoReply;
     private static string PanelSettingsPath => Path.Combine(Program.SettingsRoot, "panel.json");
+    public bool SimulatedPlayback { get; private set; }
     private bool shuttingDown;
     private bool updating;
 
@@ -164,6 +165,7 @@ sealed class ControlPanel : Window
         if (LoadPanelSettings().AutoReply) throw new InvalidDataException("联动开关未保存");
         autoReply.IsChecked = true;
         if (!LoadPanelSettings().AutoReply) throw new InvalidDataException("联动开关未恢复");
+        VerifyPlaybackFlow();
         foreach (var pet in Program.Pets)
         {
             switches[pet.Id].IsChecked = false;
@@ -179,6 +181,38 @@ sealed class ControlPanel : Window
         windows[Program.Pets[0].Id].Close();
         if (switches[Program.Pets[0].Id].IsChecked != false)
             throw new InvalidDataException("关闭桌宠未同步面板");
+    }
+    private void VerifyPlaybackFlow()
+    {
+        SimulatedPlayback = true;
+        try
+        {
+            var shao = windows["shaolan"]; var sun = windows["sunpet"]; var feng = windows["fengge"];
+            shao.PlayFirstForTest();
+            if (!shao.IsPlaying) throw new InvalidDataException("薄肌未开始");
+            shao.CompletePlaybackForTest();
+            if (!sun.IsPlaying) throw new InvalidDataException("太对了没有接话");
+            sun.CompletePlaybackForTest();
+            if (!feng.IsPlaying) throw new InvalidDataException("峰哥没有接话");
+            feng.CompletePlaybackForTest();
+            if (!sun.IsPlaying) throw new InvalidDataException("太对了没有再次接话");
+            sun.CompletePlaybackForTest();
+            if (windows.Values.Any(w => w.IsPlaying)) throw new InvalidDataException("接话没有结束");
+            shao.PlayFirstForTest(); shao.StopPlayback(); shao.CompletePlaybackForTest();
+            if (sun.IsPlaying) throw new InvalidDataException("停止后仍接话");
+            shao.PlayFirstForTest(); autoReply.IsChecked = false; shao.CompletePlaybackForTest();
+            if (sun.IsPlaying) throw new InvalidDataException("关闭联动后仍接话");
+            autoReply.IsChecked = true;
+            shao.PlayFirstForTest(); switches["sunpet"].IsChecked = false; shao.CompletePlaybackForTest();
+            switches["sunpet"].IsChecked = true; sun = windows["sunpet"];
+            if (sun.IsPlaying) throw new InvalidDataException("关闭角色后仍接话");
+            shao.PlayFirstForTest(); feng.PlayFirstForTest(); shao.CompletePlaybackForTest();
+            if (sun.IsPlaying) throw new InvalidDataException("旧播放触发接话");
+            feng.CompletePlaybackForTest();
+            if (!sun.IsPlaying) throw new InvalidDataException("新播放未接话");
+            sun.CompletePlaybackForTest();
+        }
+        finally { SimulatedPlayback = false; }
     }
     public void ShowPanel()
     {
