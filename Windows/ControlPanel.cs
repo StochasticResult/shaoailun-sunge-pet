@@ -18,6 +18,7 @@ sealed class ControlPanel : Window
     private readonly Dictionary<string, PetWindow> windows = new();
     private readonly Dictionary<string, CheckBox> switches = new();
     private readonly Dictionary<string, Slider> sliders = new();
+    private readonly Dictionary<string, ComboBox> sizes = new();
     private readonly Dictionary<string, TextBlock> values = new();
     private readonly PanelSettings panelSettings;
     private readonly Conversation conversation;
@@ -40,11 +41,12 @@ sealed class ControlPanel : Window
         Background = new SolidColorBrush(Color.FromRgb(248, 249, 252));
         var page = new StackPanel { Margin = new Thickness(24, 20, 24, 18) };
         page.Children.Add(new TextBlock { Text = "桌宠控制面板", FontSize = 24, FontWeight = FontWeights.SemiBold, Foreground = Brushes.Black });
-        page.Children.Add(new TextBlock { Text = "选择要显示的桌宠，分别调节声音。", Margin = new Thickness(0, 5, 0, 16), Foreground = Brushes.DimGray });
+        page.Children.Add(new TextBlock { Text = "选择要显示的桌宠，分别调整大小和声音。", Margin = new Thickness(0, 5, 0, 16), Foreground = Brushes.DimGray });
         foreach (var pet in Program.Pets)
         {
             var current = pet.LoadSettings();
             current.Volume = Math.Clamp(double.IsFinite(current.Volume) ? current.Volume : .65, 0, 1);
+            current.Size = PetWindow.NormalizeSize(current.Size);
             settings.Add(pet.Id, current);
             var card = new Border { Background = Brushes.White, CornerRadius = new CornerRadius(8), Padding = new Thickness(12, 8, 12, 8), Margin = new Thickness(0, 0, 0, 8), BorderBrush = new SolidColorBrush(Color.FromRgb(229, 231, 235)), BorderThickness = new Thickness(1) };
             var content = new StackPanel();
@@ -52,7 +54,24 @@ sealed class ControlPanel : Window
             switches.Add(pet.Id, on);
             on.Checked += (_, _) => { if (!updating) SetEnabled(pet, true); };
             on.Unchecked += (_, _) => { if (!updating) SetEnabled(pet, false); };
-            content.Children.Add(on);
+            var titleRow = new Grid();
+            titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var sizeLabel = new TextBlock { Text = "大小", Foreground = Brushes.DimGray, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+            var size = new ComboBox { Width = 72, SelectedValuePath = "Tag", VerticalAlignment = VerticalAlignment.Center, ToolTip = $"{pet.Name}桌宠大小" };
+            foreach (var (name, sizeValue) in PetWindow.SizeOptions)
+                size.Items.Add(new ComboBoxItem { Content = name, Tag = sizeValue });
+            size.SelectedValue = current.Size;
+            sizes.Add(pet.Id, size);
+            size.SelectionChanged += (_, _) => {
+                if (updating || size.SelectedValue is not int selected) return;
+                if (windows.TryGetValue(pet.Id, out var window)) window.SetSize(selected);
+                else { current.Size = selected; Save(pet); }
+            };
+            Grid.SetColumn(on, 0); Grid.SetColumn(sizeLabel, 1); Grid.SetColumn(size, 2);
+            titleRow.Children.Add(on); titleRow.Children.Add(sizeLabel); titleRow.Children.Add(size);
+            content.Children.Add(titleRow);
             var row = new Grid { Margin = new Thickness(0, 8, 0, 0) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -157,6 +176,12 @@ sealed class ControlPanel : Window
         values[id].Text = $"{settings[id].Volume * 100:0}%";
         updating = false;
     }
+    public void UpdateSize(string id)
+    {
+        updating = true;
+        sizes[id].SelectedValue = settings[id].Size;
+        updating = false;
+    }
     // Called by --self-test with an isolated settings directory on a Windows runner.
     public void VerifyControls()
     {
@@ -168,15 +193,29 @@ sealed class ControlPanel : Window
         VerifyPlaybackFlow();
         foreach (var pet in Program.Pets)
         {
+            sizes[pet.Id].SelectedValue = 340;
+            if (windows[pet.Id].Width != 340 || pet.LoadSettings().Size != 340)
+                throw new InvalidDataException(pet.Name + "面板大小未生效或未保存");
+            windows[pet.Id].SetSize(260);
+            if (!Equals(sizes[pet.Id].SelectedValue, 260))
+                throw new InvalidDataException(pet.Name + "右键大小未同步面板");
+            var area = SystemParameters.WorkArea;
+            windows[pet.Id].Left = area.Left + 100;
+            windows[pet.Id].Top = area.Top + 100;
             switches[pet.Id].IsChecked = false;
             if (windows.ContainsKey(pet.Id) || settings[pet.Id].Enabled || pet.LoadSettings().Enabled)
                 throw new InvalidDataException(pet.Name + "关闭失败");
+            if (pet.LoadSettings().Left != area.Left + 100 || pet.LoadSettings().Top != area.Top + 100)
+                throw new InvalidDataException(pet.Name + "位置未保存");
+            sizes[pet.Id].SelectedValue = 190;
+            if (pet.LoadSettings().Size != 190) throw new InvalidDataException(pet.Name + "关闭时大小未保存");
             sliders[pet.Id].Value = 25;
             if (Math.Abs(pet.LoadSettings().Volume - .25) > .001)
                 throw new InvalidDataException(pet.Name + "音量未保存");
             switches[pet.Id].IsChecked = true;
             if (!windows.ContainsKey(pet.Id) || !pet.LoadSettings().Enabled)
                 throw new InvalidDataException(pet.Name + "重新开启失败");
+            if (windows[pet.Id].Width != 190) throw new InvalidDataException(pet.Name + "重新开启时大小不对");
         }
         windows[Program.Pets[0].Id].Close();
         if (switches[Program.Pets[0].Id].IsChecked != false)

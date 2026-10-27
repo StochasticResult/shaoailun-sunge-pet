@@ -217,6 +217,8 @@ static class Program
 
 sealed class PetWindow : Window
 {
+    public static readonly (string Name, int Value)[] SizeOptions = { ("小", 190), ("中", 260), ("大", 340) };
+    public static int NormalizeSize(int size) => SizeOptions.Any(option => option.Value == size) ? size : 260;
     private readonly PetDefinition pet;
     private readonly List<Clip> clips;
     private readonly Settings settings;
@@ -241,7 +243,7 @@ sealed class PetWindow : Window
         settings.ExcludedIds = settings.ExcludedIds.Intersect(clips.Select(c => c.Id)).ToList();
         if (settings.ExcludedIds.Count == clips.Count) settings.ExcludedIds.Clear();
         if (!clips.Any(c => c.Id == settings.PinnedId)) settings.RandomMode = true;
-        settings.Size = new[] { 190, 260, 340 }.Contains(settings.Size) ? settings.Size : 260;
+        settings.Size = NormalizeSize(settings.Size);
         settings.Volume = Math.Clamp(settings.Volume, 0, 1);
         Title = pet.Name + "桌宠"; WindowStyle = WindowStyle.None; AllowsTransparency = true;
         Background = Brushes.Transparent; Topmost = true; ShowInTaskbar = false; ShowActivated = false;
@@ -277,6 +279,12 @@ sealed class PetWindow : Window
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { ShowCaption("设置保存失败", 3); }
     }
     public void SetVolume(double volume) { settings.Volume = Math.Clamp(volume, 0, 1); if (player != null) player.Volume = settings.Volume; }
+    public void SetSize(int size)
+    {
+        settings.Size = NormalizeSize(size);
+        Width = settings.Size; Height = settings.Size + 44;
+        SavePosition(); panel.UpdateSize(pet.Id);
+    }
     public bool IsPlaying => playing;
     public void StopPlayback()
     {
@@ -402,7 +410,7 @@ sealed class PetWindow : Window
         foreach (int value in new[] { 0, 25, 50, 65, 80, 100 }) volume.Items.Add(Item(value == 0 ? "静音" : $"{value}%", () => { SetVolume(value / 100.0); Save(); panel.UpdateVolume(pet.Id); }, Math.Abs(settings.Volume - value / 100.0) < .01));
         menu.Items.Add(volume);
         var size = new MenuItem { Header = "人物大小" };
-        foreach (var (name, value) in new[] { ("小", 190), ("中", 260), ("大", 340) }) size.Items.Add(Item(name, () => { settings.Size = value; Width = value; Height = value + 44; SavePosition(); }, settings.Size == value));
+        foreach (var (name, value) in SizeOptions) size.Items.Add(Item(name, () => SetSize(value), settings.Size == value));
         menu.Items.Add(size);
         menu.Items.Add(Item("移回屏幕右下角", () => { ResetPosition(); SavePosition(); }));
         menu.Items.Add(Item("打开控制面板", panel.ShowPanel));
