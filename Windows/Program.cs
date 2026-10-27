@@ -14,6 +14,7 @@ record Clip(int Id, string Label, string File, double Duration, bool DefaultOff)
 
 sealed class Settings
 {
+    public bool Enabled { get; set; } = true;
     public double Volume { get; set; } = 0.65;
     public int Size { get; set; } = 260;
     public bool RandomMode { get; set; } = true;
@@ -49,93 +50,151 @@ sealed class ShuffleBag
     }
 }
 
+sealed record PetDefinition(string Id, string Name, string Directory, int ExpectedClips, int DefaultOffset)
+{
+    public string AssetDirectory => Path.Combine(Program.Assets, Directory);
+    public string SettingsPath => Path.Combine(Program.SettingsRoot, Id == "shaolan" ? "settings.json" : Id + ".json");
+    public List<Clip> LoadClips()
+    {
+        var clips = JsonSerializer.Deserialize<List<Clip>>(File.ReadAllText(Path.Combine(AssetDirectory, "clips.json")), Program.JsonOptions)
+            ?? throw new InvalidDataException(Name + "语音清单无法读取");
+        if (clips.Count != ExpectedClips || clips.Select(c => c.Id).Distinct().Count() != clips.Count ||
+            clips.Any(c => c.Duration <= 0 || !File.Exists(Path.Combine(AssetDirectory, "Clips", c.File))))
+            throw new InvalidDataException(Name + "语音素材缺失或清单有误");
+        return clips;
+    }
+    public Settings LoadSettings()
+    {
+        try { return JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath), Program.JsonOptions) ?? new(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return new(); }
+    }
+    public void SaveSettings(Settings settings)
+    {
+        System.IO.Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+        File.WriteAllText(SettingsPath, JsonSerializer.Serialize(settings, Program.JsonOptions));
+    }
+}
+
 static class Program
 {
     internal static readonly string Assets = Path.Combine(AppContext.BaseDirectory, "Assets");
+    internal static string SettingsRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ShaolanPet");
     internal static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true, WriteIndented = true };
+    internal static readonly PetDefinition[] Pets = {
+        new("shaolan", "薄肌", "", 37, 0),
+        new("sunpet", "太对了", "SunPet", 28, 1),
+        new("fengge", "峰哥", "FengGe", 11, 2)
+    };
     [STAThread]
     static int Main(string[] args)
     {
         try
         {
-            var clips = JsonSerializer.Deserialize<List<Clip>>(File.ReadAllText(Path.Combine(Assets, "clips.json")), JsonOptions)
-                ?? throw new InvalidDataException("无法读取语音清单");
-            if (clips.Count == 0 || clips.Select(c => c.Id).Distinct().Count() != clips.Count ||
-                clips.Any(c => !File.Exists(Path.Combine(Assets, "Clips", c.File))))
-                throw new InvalidDataException("语音素材缺失或清单有误");
+            var clips = Pets.ToDictionary(p => p.Id, p => p.LoadClips());
             if (args.Contains("--self-test")) return SelfTest(clips);
             using var mutex = new System.Threading.Mutex(true, @"Local\ShaolanPet.Windows", out bool first);
             if (!first) return 0;
             var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
-            app.Run(new PetWindow(clips));
+            app.Run(new ControlPanel(clips));
             return 0;
         }
         catch (Exception ex)
         {
             if (args.Contains("--self-test")) Console.Error.WriteLine("FAIL: " + ex);
-            else MessageBox.Show("桌宠启动失败：" + ex.Message, "薄肌桌宠", MessageBoxButton.OK, MessageBoxImage.Error);
+            else MessageBox.Show("桌宠启动失败：" + ex.Message, "桌宠控制面板", MessageBoxButton.OK, MessageBoxImage.Error);
             return 1;
         }
     }
-    static int SelfTest(List<Clip> clips)
+    static int SelfTest(Dictionary<string, List<Clip>> allClips)
     {
-        // Decode every packaged asset and exercise shuffle boundaries without touching user settings.
-        var image = new BitmapImage(new Uri(Path.Combine(Assets, "face.png")));
-        if (image.PixelWidth == 0 || image.PixelHeight == 0) throw new InvalidDataException("头像读取失败");
-        foreach (var c in clips)
+        foreach (var pet in Pets)
         {
-            using var reader = new BinaryReader(File.OpenRead(Path.Combine(Assets, "Clips", c.File)));
-            if (new string(reader.ReadChars(4)) != "RIFF") throw new InvalidDataException(c.File);
-            reader.ReadInt32();
-            if (new string(reader.ReadChars(4)) != "WAVE") throw new InvalidDataException(c.File);
-        }
-        var bag = new ShuffleBag(); int? last = null;
-        int[] ids = clips.Select(c => c.Id).ToArray();
-        for (int round = 0; round < 100; round++)
-        {
-            var seen = new HashSet<int>();
-            foreach (int _ in ids)
+            var image = new BitmapImage(new Uri(Path.Combine(pet.AssetDirectory, "face.png")));
+            if (image.PixelWidth == 0 || image.PixelHeight == 0) throw new InvalidDataException(pet.Name + "头像读取失败");
+            var clips = allClips[pet.Id];
+            foreach (var c in clips)
             {
-                int value = bag.Next(ids) ?? throw new InvalidDataException("随机池为空");
-                if ((ids.Length > 1 && value == last) || !seen.Add(value)) throw new InvalidDataException("随机池重复");
-                last = value;
+                using var reader = new BinaryReader(File.OpenRead(Path.Combine(pet.AssetDirectory, "Clips", c.File)));
+                if (c.File.EndsWith(".wav", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (new string(reader.ReadChars(4)) != "RIFF") throw new InvalidDataException(c.File);
+                    reader.ReadInt32();
+                    if (new string(reader.ReadChars(4)) != "WAVE") throw new InvalidDataException(c.File);
+                }
+                else if (c.File.EndsWith(".m4a", StringComparison.OrdinalIgnoreCase))
+                {
+                    reader.ReadInt32();
+                    if (new string(reader.ReadChars(4)) != "ftyp") throw new InvalidDataException(c.File);
+                }
+                else throw new InvalidDataException("不支持的音频：" + c.File);
             }
+            var bag = new ShuffleBag(); int? last = null;
+            int[] ids = clips.Select(c => c.Id).ToArray();
+            for (int round = 0; round < 100; round++)
+            {
+                var seen = new HashSet<int>();
+                foreach (int _ in ids)
+                {
+                    int value = bag.Next(ids) ?? throw new InvalidDataException("随机池为空");
+                    if ((ids.Length > 1 && value == last) || !seen.Add(value)) throw new InvalidDataException("随机池重复");
+                    last = value;
+                }
+            }
+            bag.Reset();
+            if (bag.Next(new[] { ids[0] }) != ids[0] || bag.Next(Array.Empty<int>()) != null)
+                throw new InvalidDataException("轮播筛选失败");
         }
+        var testRoot = Path.Combine(Path.GetTempPath(), "ShaolanPet-self-test-" + Guid.NewGuid());
+        SettingsRoot = testRoot;
+        try
+        {
+            var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
+            var panel = new ControlPanel(allClips);
+            Exception? failure = null;
+            panel.Loaded += (_, _) => {
+                try { panel.VerifyControls(); }
+                catch (Exception e) { failure = e; }
+                finally { panel.Close(); }
+            };
+            app.Run(panel);
+            if (failure != null) throw new InvalidDataException("控制面板自检失败", failure);
+        }
+        finally { if (System.IO.Directory.Exists(testRoot)) System.IO.Directory.Delete(testRoot, true); }
         return 0;
     }
 }
 
 sealed class PetWindow : Window
 {
+    private readonly PetDefinition pet;
     private readonly List<Clip> clips;
     private readonly Settings settings;
+    private readonly ControlPanel panel;
     private readonly ShuffleBag bag = new();
     private readonly MediaPlayer player = new();
     private readonly Image face = new();
     private readonly TextBlock caption = new();
     private readonly DispatcherTimer captionTimer = new();
     private readonly ScaleTransform faceScale = new(1, 1);
-    private readonly string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ShaolanPet", "settings.json");
     private Point mouseDown;
     private bool dragging;
     private int? lastPlayed;
 
-    public PetWindow(List<Clip> clips)
+    public PetWindow(PetDefinition pet, List<Clip> clips, Settings settings, ControlPanel panel)
     {
-        this.clips = clips;
-        settings = LoadSettings();
+        this.pet = pet; this.clips = clips; this.settings = settings; this.panel = panel;
         settings.ExcludedIds ??= clips.Where(c => c.DefaultOff).Select(c => c.Id).ToList();
         settings.ExcludedIds = settings.ExcludedIds.Intersect(clips.Select(c => c.Id)).ToList();
         if (settings.ExcludedIds.Count == clips.Count) settings.ExcludedIds.Clear();
         if (!clips.Any(c => c.Id == settings.PinnedId)) settings.RandomMode = true;
         settings.Size = new[] { 190, 260, 340 }.Contains(settings.Size) ? settings.Size : 260;
         settings.Volume = Math.Clamp(settings.Volume, 0, 1);
-        Title = "薄肌桌宠"; WindowStyle = WindowStyle.None; AllowsTransparency = true;
+        Title = pet.Name + "桌宠"; WindowStyle = WindowStyle.None; AllowsTransparency = true;
         Background = Brushes.Transparent; Topmost = true; ShowInTaskbar = false; ShowActivated = false;
         ResizeMode = ResizeMode.NoResize; SizeToContent = SizeToContent.Manual;
         Width = settings.Size; Height = settings.Size + 44;
         var grid = new Grid { Background = Brushes.Transparent, ToolTip = "点击播放 · 拖动移动 · 右键设置" };
-        face.Source = new BitmapImage(new Uri(Path.Combine(Program.Assets, "face.png")));
+        face.Source = new BitmapImage(new Uri(Path.Combine(pet.AssetDirectory, "face.png")));
         face.Stretch = Stretch.Uniform; face.Margin = new Thickness(8, 44, 8, 8);
         face.RenderTransformOrigin = new Point(.5, 1); face.RenderTransform = faceScale;
         grid.Children.Add(face);
@@ -158,25 +217,22 @@ sealed class PetWindow : Window
         grid.MouseLeftButtonUp += (_, _) => { if (grid.IsMouseCaptured) grid.ReleaseMouseCapture(); if (!dragging) PlayNext(); };
         grid.MouseRightButtonUp += (_, e) => { grid.ContextMenu = MakeMenu(); grid.ContextMenu.IsOpen = true; e.Handled = true; };
         Loaded += (_, _) => { RestorePosition(); ShowCaption("点我说一句 · 右键设置", 5); };
-        Closed += (_, _) => { SavePosition(); player.Close(); };
-    }
-    private Settings LoadSettings()
-    {
-        try { return JsonSerializer.Deserialize<Settings>(File.ReadAllText(settingsPath), Program.JsonOptions) ?? new(); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return new(); }
+        Closed += (_, _) => { SavePosition(); player.Close(); panel.PetClosed(pet.Id); };
     }
     private void Save()
     {
-        try { Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!); File.WriteAllText(settingsPath, JsonSerializer.Serialize(settings, Program.JsonOptions)); }
+        try { pet.SaveSettings(settings); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { ShowCaption("设置保存失败", 3); }
     }
+    public void SetVolume(double volume) { settings.Volume = Math.Clamp(volume, 0, 1); player.Volume = settings.Volume; }
+    public void StopPlayback() { player.Stop(); Animate(false); captionTimer.Stop(); caption.Visibility = Visibility.Collapsed; }
     private void RestorePosition()
     {
         var area = SystemParameters.WorkArea;
         if (settings.Left is double x && settings.Top is double y && x + Width > area.Left + 80 && x < area.Right - 80 && y + Height > area.Top + 80 && y < area.Bottom - 80) { Left = x; Top = y; }
         else ResetPosition();
     }
-    private void ResetPosition() { var area = SystemParameters.WorkArea; Left = area.Right - Width - 32; Top = area.Bottom - Height - 24; }
+    private void ResetPosition() { var area = SystemParameters.WorkArea; Left = Math.Max(area.Left, area.Right - Width - 32 - pet.DefaultOffset * (Width + 12)); Top = Math.Max(area.Top, area.Bottom - Height - 24); }
     private void SavePosition() { settings.Left = Left; settings.Top = Top; Save(); }
     private void ShowCaption(string text, double seconds)
     {
@@ -198,7 +254,7 @@ sealed class PetWindow : Window
     private void Play(Clip clip)
     {
         player.Stop(); player.Close(); Animate(false);
-        player.Open(new Uri(Path.Combine(Program.Assets, "Clips", clip.File))); player.Volume = settings.Volume; player.Play();
+        player.Open(new Uri(Path.Combine(pet.AssetDirectory, "Clips", clip.File))); player.Volume = settings.Volume; player.Play();
         lastPlayed = clip.Id; Animate(true); ShowCaption(clip.Label, clip.Duration + .4);
     }
     private MenuItem Item(string title, Action action, bool isChecked = false)
@@ -209,7 +265,7 @@ sealed class PetWindow : Window
     private ContextMenu MakeMenu()
     {
         var menu = new ContextMenu();
-        menu.Items.Add(new MenuItem { Header = $"薄肌桌宠 · {clips.Count}句原声", IsEnabled = false });
+        menu.Items.Add(new MenuItem { Header = $"{pet.Name}桌宠 · {clips.Count}句原声", IsEnabled = false });
         menu.Items.Add(Item("随机说一句", PlayNext));
         var choose = new MenuItem { Header = "挑一句" };
         foreach (var clip in clips) choose.Items.Add(Item($"{clip.Id:00}  {clip.Label}", () => { if (!settings.RandomMode) { settings.PinnedId = clip.Id; Save(); } Play(clip); }));
@@ -232,15 +288,16 @@ sealed class PetWindow : Window
         }
         filters.Items.Add(new Separator());
         filters.Items.Add(Item("全部恢复", () => { settings.ExcludedIds!.Clear(); bag.Reset(); Save(); })); menu.Items.Add(filters);
-        menu.Items.Add(Item("停止播放", () => { player.Stop(); Animate(false); captionTimer.Stop(); caption.Visibility = Visibility.Collapsed; }));
+        menu.Items.Add(Item("停止播放", StopPlayback));
         var volume = new MenuItem { Header = "音量" };
-        foreach (int value in new[] { 0, 25, 50, 65, 80, 100 }) volume.Items.Add(Item(value == 0 ? "静音" : $"{value}%", () => { settings.Volume = value / 100.0; player.Volume = settings.Volume; Save(); }, Math.Abs(settings.Volume - value / 100.0) < .01));
+        foreach (int value in new[] { 0, 25, 50, 65, 80, 100 }) volume.Items.Add(Item(value == 0 ? "静音" : $"{value}%", () => { SetVolume(value / 100.0); Save(); panel.UpdateVolume(pet.Id); }, Math.Abs(settings.Volume - value / 100.0) < .01));
         menu.Items.Add(volume);
         var size = new MenuItem { Header = "人物大小" };
         foreach (var (name, value) in new[] { ("小", 190), ("中", 260), ("大", 340) }) size.Items.Add(Item(name, () => { settings.Size = value; Width = value; Height = value + 44; SavePosition(); }, settings.Size == value));
         menu.Items.Add(size);
         menu.Items.Add(Item("移回屏幕右下角", () => { ResetPosition(); SavePosition(); }));
-        menu.Items.Add(new Separator()); menu.Items.Add(Item("退出桌宠", Close));
+        menu.Items.Add(Item("打开控制面板", panel.ShowPanel));
+        menu.Items.Add(new Separator()); menu.Items.Add(Item("关闭这个桌宠", Close));
         return menu;
     }
 }

@@ -10,3 +10,10 @@
 ## 第三方代码
 
 交互和播放设计参考了 [SunPet](https://github.com/Ganzhe2028/SunPet)，其 MIT 许可全文见 [licenses/SunPet-MIT.txt](licenses/SunPet-MIT.txt)。
+
+## Windows 合集中的其他角色
+
+- 太对了：头像和 28 句音频取自 [SunPet](https://github.com/Ganzhe2028/SunPet)（版本 `9b68d0911552d8c880a46ca72980d3f9af9743ee`），原素材说明见 [Windows/Assets/Notices/SunPet.md](Windows/Assets/Notices/SunPet.md)。
+- 峰哥：头像和 11 句音频取自 [FengGe-Desktop-Pet](https://github.com/Ganzhe2028/FengGe-Desktop-Pet)（版本 `d3336debfafc37963ec5612cb27793e250228b9b`），原素材说明见 [Windows/Assets/Notices/FengGe.md](Windows/Assets/Notices/FengGe.md)，其代码许可见 [licenses/FengGe-MIT.txt](licenses/FengGe-MIT.txt)。
+
+这些头像和音频不在 MIT 许可范围内，版权归原权利人；仅供学习交流，不商用。

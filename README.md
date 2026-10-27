@@ -23,7 +23,7 @@
 
 四个各自独立的 App，不是四个皮肤。点哪张脸进哪个仓库。
 
-本仓库是 [ShaolanPet 原项目](https://github.com/Ganzhe2028/ShaolanPet)的 Windows 移植版，保留原作者的 macOS 版本与许可说明。
+本仓库在 Windows 上把薄肌、太对了和峰哥整合进一个程序，可以在控制面板分别开关和调音量；Mac 上仍是独立 App。素材来自原项目，保留作者和许可说明。
 
 Mac 上薄肌、太对了、好事三个同时开着会互相接话，凑成一段捧哏；Windows 版暂不支持联动。第四个是别人做的，还没接进这套联动。
 
@@ -35,11 +35,11 @@ Mac 上薄肌、太对了、好事三个同时开着会互相接话，凑成一�
 2. 双击打开，把 app 拖进「应用程序」
 3. 第一次打开会弹「无法验证开发者」：右键 → 打开。这只是因为没买苹果签名，不是有毒
 
-**Windows：**从 [Releases](https://github.com/StochasticResult/shaoailun-sunge-pet/releases/latest) 下载 `ShaolanPet-*-Windows-x64.zip`，解压整个文件夹后双击 `ShaolanPet.exe`。
+**Windows：**从 [Releases](https://github.com/StochasticResult/shaoailun-sunge-pet/releases/latest) 下载 `ShaolanPet-*-Windows-x64.zip`，解压整个文件夹后双击 `ShaolanPet.exe`。控制面板能分别开关三个桌宠、调整音量；关闭面板会退出全部桌宠。
 
 不确定自己这台算不算 Apple Silicon：左上角苹果图标 → 关于本机，芯片写 `Apple M` 开头的就是。
 
-37 句原声，默认只放最能笑的 8 句，右键能全开。
+薄肌有 37 句原声，默认只轮播 8 句；太对了有 28 句，峰哥有 11 句。右键人物可挑句子和调整大小。
 
 还装不上、想自己编译、想换声音换脸：[技术文档](TECHNICAL.md)
 
