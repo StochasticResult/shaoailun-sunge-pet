@@ -1,14 +1,19 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace ShaolanPet;
 
 sealed class PanelSettings
 {
     public bool AutoReply { get; set; } = true;
+    public bool CodexReaction { get; set; } = true;
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? OtherSettings { get; set; }
 }
 
 sealed class ControlPanel : Window
@@ -23,18 +28,30 @@ sealed class ControlPanel : Window
     private readonly PanelSettings panelSettings;
     private readonly Conversation conversation;
     private readonly CheckBox autoReply;
+    private readonly CheckBox codexReaction;
+    private readonly TextBlock codexStatus = new() { Foreground = Brushes.DimGray, Margin = new Thickness(22, 0, 0, 6), TextWrapping = TextWrapping.Wrap };
+    private readonly CodexReactionQueue codexQueue;
+    private readonly DispatcherTimer codexTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private CodexMessageWatcher? codexWatcher;
+    private readonly bool startCodexWatcherAllowed;
+    private long watcherGeneration;
     private static string PanelSettingsPath => Path.Combine(Program.SettingsRoot, "panel.json");
     public bool SimulatedPlayback { get; private set; }
     private bool shuttingDown;
     private bool updating;
 
-    public ControlPanel(Dictionary<string, List<Clip>> clips)
+    public ControlPanel(Dictionary<string, List<Clip>> clips, bool startWatcher = true)
     {
         this.clips = clips;
+        startCodexWatcherAllowed = startWatcher;
         panelSettings = LoadPanelSettings();
         conversation = new Conversation(panelSettings.AutoReply,
             id => windows.TryGetValue(id, out var window) && !window.IsPlaying,
             turn => windows.TryGetValue(turn.Speaker, out var window) && window.PlayReply(turn));
+        codexQueue = new CodexReactionQueue(panelSettings.CodexReaction,
+            () => windows.ContainsKey("sunpet") && !windows.Values.Any(w => w.IsPlaying),
+            () => windows.TryGetValue("sunpet", out var window) && window.TryPlayCodexReaction());
+        codexTimer.Tick += (_, _) => { codexQueue.Drain(); UpdateCodexStatus(); };
         Title = "桌宠控制面板";
         Width = 460; Height = 480; MinWidth = 420; MinHeight = 400;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -95,19 +112,28 @@ sealed class ControlPanel : Window
         autoReply.Checked += (_, _) => SetAutoReply(true);
         autoReply.Unchecked += (_, _) => SetAutoReply(false);
         page.Children.Add(autoReply);
+        codexReaction = new CheckBox { Content = "Codex 消息联动（所选聊天）", IsChecked = panelSettings.CodexReaction, Margin = new Thickness(2, 4, 0, 6), FontSize = 14, ToolTip = "收到所选本机聊天的新用户消息时，太对了随机回应" };
+        codexReaction.Checked += (_, _) => SetCodexReaction(true);
+        codexReaction.Unchecked += (_, _) => SetCodexReaction(false);
+        page.Children.Add(codexReaction);
+        page.Children.Add(codexStatus);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 0) };
         var stop = new Button { Content = "停止所有声音", Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 10, 0) };
-        stop.Click += (_, _) => { conversation.Cancel(); foreach (var window in windows.Values) window.StopPlayback(); };
+        stop.Click += (_, _) => StopAllPlayback();
         var quit = new Button { Content = "退出全部", Padding = new Thickness(12, 5, 12, 5) };
         quit.Click += (_, _) => Close();
         buttons.Children.Add(stop); buttons.Children.Add(quit); page.Children.Add(buttons);
         page.Children.Add(new TextBlock { Text = "点击人物播放，拖动移动；右键可选择句子和大小。", Margin = new Thickness(0, 10, 0, 0), Foreground = Brushes.DimGray, TextWrapping = TextWrapping.Wrap });
         Content = new ScrollViewer { Content = page, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        Loaded += (_, _) => { foreach (var pet in Program.Pets) if (settings[pet.Id].Enabled) OpenPet(pet); };
-        Closing += (_, _) => { shuttingDown = true; conversation.Cancel(); };
+        Loaded += (_, _) => {
+            foreach (var pet in Program.Pets) if (settings[pet.Id].Enabled) OpenPet(pet);
+            codexTimer.Start();
+            if (startWatcher && panelSettings.CodexReaction) StartCodexWatcher();
+        };
+        Closing += (_, _) => { shuttingDown = true; codexTimer.Stop(); StopCodexWatcher(); StopAllPlayback(); };
     }
 
-    private static PanelSettings LoadPanelSettings()
+    internal static PanelSettings LoadPanelSettings()
     {
         try { return JsonSerializer.Deserialize<PanelSettings>(File.ReadAllText(PanelSettingsPath), Program.JsonOptions) ?? new(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return new(); }
@@ -116,6 +142,19 @@ sealed class ControlPanel : Window
     {
         panelSettings.AutoReply = enabled;
         conversation.SetEnabled(enabled);
+        SavePanelSettings();
+    }
+    private void UpdateCodexStatus()
+    {
+        codexStatus.Text = !panelSettings.CodexReaction ? "消息联动已关闭" : codexWatcher?.Status switch {
+            "watching-selected-chat" => "监听所选本机聊天；太对了空闲时回应",
+            "source-not-configured" or "source-not-found" => "未找到所选聊天的监听配置",
+            "not-started" or null => "等待消息来源",
+            _ => "消息来源暂不可用；桌宠仍可正常使用"
+        };
+    }
+    private void SavePanelSettings()
+    {
         try {
             Directory.CreateDirectory(Program.SettingsRoot);
             File.WriteAllText(PanelSettingsPath, JsonSerializer.Serialize(panelSettings, Program.JsonOptions));
@@ -123,7 +162,56 @@ sealed class ControlPanel : Window
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         { MessageBox.Show("设置无法保存：" + e.Message, "桌宠控制面板", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
-    public ConversationTurn StartConversation(string id) => conversation.Start(id);
+    private void SetCodexReaction(bool enabled)
+    {
+        panelSettings.CodexReaction = enabled;
+        codexQueue.SetEnabled(enabled);
+        if (!enabled && windows.TryGetValue("sunpet", out var sun) && sun.IsCodexReaction) sun.StopPlayback();
+        if (enabled && IsLoaded && startCodexWatcherAllowed) StartCodexWatcher();
+        else if (!enabled) StopCodexWatcher();
+        SavePanelSettings();
+        UpdateCodexStatus();
+    }
+    private void StartCodexWatcher()
+    {
+        if (codexWatcher != null || shuttingDown) return;
+        long generation = ++watcherGeneration;
+        try {
+            codexWatcher = new CodexMessageWatcher(id => {
+                if (Dispatcher.HasShutdownStarted) return;
+                try { Dispatcher.BeginInvoke(new Action(() => { if (generation == watcherGeneration) EnqueueCodexReaction(id); })); }
+                catch (InvalidOperationException) { }
+            });
+            codexWatcher.Start();
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        { StopCodexWatcher(); System.Diagnostics.Trace.WriteLine("Codex reaction source unavailable: " + error.GetType().Name); }
+    }
+    private void StopCodexWatcher()
+    {
+        var watcher = codexWatcher; codexWatcher = null;
+        watcherGeneration++;
+        try { watcher?.Dispose(); }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        { System.Diagnostics.Trace.WriteLine("Codex reaction source shutdown: " + error.GetType().Name); }
+    }
+    public void EnqueueCodexReaction(string eventId)
+    {
+        if (shuttingDown || Dispatcher.HasShutdownStarted) return;
+        if (!Dispatcher.CheckAccess()) { Dispatcher.BeginInvoke(new Action(() => EnqueueCodexReaction(eventId))); return; }
+        if (windows.ContainsKey("sunpet")) codexQueue.Enqueue(eventId);
+    }
+    private void StopAllPlayback()
+    {
+        codexQueue.Clear(); conversation.Cancel();
+        foreach (var window in windows.Values) window.StopPlayback();
+    }
+    public ConversationTurn StartConversation(string id)
+    {
+        if (windows.TryGetValue("sunpet", out var sun) && sun.IsCodexReaction) sun.StopPlayback();
+        return conversation.Start(id);
+    }
+    public ConversationTurn StartCodexReaction() => conversation.Start("sunpet", allowReplies: false);
     private Action<ConversationTurn>? playbackTestObserver;
     private Action<Exception>? playbackTestFailure;
     public void ConversationEnded(ConversationTurn turn)
@@ -137,6 +225,12 @@ sealed class ControlPanel : Window
         foreach (var window in windows.Values) window.SetVolume(0);
         playbackTestObserver = onEnded; playbackTestFailure = onFailure;
         windows["shaolan"].PlayFirstForTest();
+    }
+    public void StartCodexPlaybackTest(Action<ConversationTurn> onEnded, Action<Exception> onFailure)
+    {
+        foreach (var window in windows.Values) window.SetVolume(0);
+        playbackTestObserver = onEnded; playbackTestFailure = onFailure;
+        EnqueueCodexReaction("audio-test-1"); EnqueueCodexReaction("audio-test-2");
     }
     public void CancelIfCurrent(ConversationTurn turn) => conversation.CancelIfCurrent(turn);
 
@@ -164,6 +258,7 @@ sealed class ControlPanel : Window
     {
         windows.Remove(id);
         conversation.Cancel();
+        if (id == "sunpet") codexQueue.Clear();
         if (shuttingDown) return;
         settings[id].Enabled = false;
         updating = true; switches[id].IsChecked = false; updating = false;
@@ -186,11 +281,21 @@ sealed class ControlPanel : Window
     public void VerifyControls()
     {
         if (windows.Count != Program.Pets.Length) throw new InvalidDataException("桌宠未全部启动");
+        if (!JsonSerializer.Deserialize<PanelSettings>("{\"AutoReply\":false}", Program.JsonOptions)!.CodexReaction)
+            throw new InvalidDataException("旧设置未默认开启 Codex 反应");
+        var previous = JsonSerializer.Deserialize<PanelSettings>("{\"AutoReply\":false,\"ExistingSetting\":123}", Program.JsonOptions)!;
+        if (JsonDocument.Parse(JsonSerializer.Serialize(previous, Program.JsonOptions)).RootElement.GetProperty("ExistingSetting").GetInt32() != 123)
+            throw new InvalidDataException("面板未知设置未保留");
+        codexReaction.IsChecked = false;
+        if (LoadPanelSettings().CodexReaction) throw new InvalidDataException("Codex 开关未保存");
+        codexReaction.IsChecked = true;
+        if (!LoadPanelSettings().CodexReaction) throw new InvalidDataException("Codex 开关未恢复");
         autoReply.IsChecked = false;
         if (LoadPanelSettings().AutoReply) throw new InvalidDataException("联动开关未保存");
         autoReply.IsChecked = true;
         if (!LoadPanelSettings().AutoReply) throw new InvalidDataException("联动开关未恢复");
         VerifyPlaybackFlow();
+        VerifyCodexFlow();
         foreach (var pet in Program.Pets)
         {
             sizes[pet.Id].SelectedValue = 340;
@@ -252,6 +357,47 @@ sealed class ControlPanel : Window
             sun.CompletePlaybackForTest();
         }
         finally { SimulatedPlayback = false; }
+    }
+    private void VerifyCodexFlow()
+    {
+        SimulatedPlayback = true;
+        var sun = windows["sunpet"]; var shao = windows["shaolan"]; var feng = windows["fengge"];
+        var sunSettings = settings["sunpet"];
+        bool wasRandom = sunSettings.RandomMode; int? wasPinned = sunSettings.PinnedId;
+        try
+        {
+            StopAllPlayback();
+            sunSettings.RandomMode = false; sunSettings.PinnedId = clips["sunpet"][0].Id;
+            int? last = null;
+            for (int i = 0; i < 60; i++)
+            {
+                EnqueueCodexReaction("sim-" + i); EnqueueCodexReaction("sim-" + i); codexQueue.Drain();
+                if (!sun.IsCodexReaction || shao.IsPlaying || feng.IsPlaying || sun.LastPlayedId == last)
+                    throw new InvalidDataException("Codex 未独立随机播放或连续同音");
+                last = sun.LastPlayedId;
+                sun.CompletePlaybackForTest(); codexQueue.Drain();
+                if (windows.Values.Any(w => w.IsPlaying)) throw new InvalidDataException("Codex 重复播放或触发接话链");
+            }
+            shao.PlayFirstForTest(); EnqueueCodexReaction("waiting"); codexQueue.Drain();
+            if (sun.IsPlaying || codexQueue.PendingCount != 1) throw new InvalidDataException("Codex 未等待现有语音");
+            shao.CompletePlaybackForTest(); codexQueue.Drain();
+            if (sun.IsCodexReaction) throw new InvalidDataException("Codex 打断接话链");
+            sun.CompletePlaybackForTest(); feng.CompletePlaybackForTest(); sun.CompletePlaybackForTest(); codexQueue.Drain();
+            if (!sun.IsCodexReaction) throw new InvalidDataException("Codex 排队后未播放");
+            shao.PlayFirstForTest();
+            if (sun.IsPlaying || !shao.IsPlaying) throw new InvalidDataException("手动播放未停止 Codex 反应");
+            StopAllPlayback();
+            EnqueueCodexReaction("disable-active"); codexQueue.Drain(); EnqueueCodexReaction("disable-queued");
+            codexReaction.IsChecked = false; codexQueue.Drain();
+            if (sun.IsPlaying || codexQueue.PendingCount != 0) throw new InvalidDataException("关闭 Codex 未停止播放并清队列");
+            codexReaction.IsChecked = true;
+            EnqueueCodexReaction("stop-all"); StopAllPlayback(); codexQueue.Drain();
+            if (sun.IsPlaying) throw new InvalidDataException("停止全部后仍有 Codex 反应");
+            switches["sunpet"].IsChecked = false; EnqueueCodexReaction("hidden"); codexQueue.Drain();
+            switches["sunpet"].IsChecked = true; codexQueue.Drain();
+            if (windows["sunpet"].IsPlaying) throw new InvalidDataException("关闭孙哥期间积压 Codex 反应");
+        }
+        finally { sunSettings.RandomMode = wasRandom; sunSettings.PinnedId = wasPinned; StopAllPlayback(); SimulatedPlayback = false; }
     }
     public void ShowPanel()
     {

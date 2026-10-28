@@ -90,9 +90,28 @@ static class Program
     {
         try
         {
+            if (args.Contains("--version"))
+            {
+                Console.WriteLine("ShaolanPet.Windows " + typeof(Program).Assembly.GetName().Version);
+                return 0;
+            }
+            if (args.Contains("--dump-state"))
+            {
+                using var source = new CodexMessageWatcher(_ => { });
+                source.PollOnce();
+                Console.WriteLine(JsonSerializer.Serialize(new {
+                    version = typeof(Program).Assembly.GetName().Version?.ToString(),
+                    codexReactionEnabled = ControlPanel.LoadPanelSettings().CodexReaction,
+                    scope = "selected local Codex Desktop chat only",
+                    sourceProbeStatus = source.Status,
+                    mode = "one-shot metadata probe; running app is not queried"
+                }, JsonOptions));
+                return 0;
+            }
             var clips = Pets.ToDictionary(p => p.Id, p => p.LoadClips());
             if (args.Contains("--self-test")) return SelfTest(clips);
             if (args.Contains("--playback-test")) return PlaybackTest(clips);
+            if (args.Contains("--codex-playback-test")) return PlaybackTest(clips, codex: true);
             using var mutex = new System.Threading.Mutex(true, @"Local\ShaolanPet.Windows", out bool first);
             if (!first) return 0;
             var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
@@ -101,14 +120,14 @@ static class Program
         }
         catch (Exception ex)
         {
-            if (args.Contains("--self-test") || args.Contains("--playback-test")) {
+            if (args.Contains("--self-test") || args.Contains("--playback-test") || args.Contains("--codex-playback-test") || args.Contains("--dump-state")) {
                 Console.Error.WriteLine("FAIL: " + ex);
                 var log = Environment.GetEnvironmentVariable("SHAOLAN_TEST_LOG");
                 if (!string.IsNullOrEmpty(log)) File.WriteAllText(log, ex.ToString());
             }
             else MessageBox.Show("桌宠启动失败：" + ex.Message, "桌宠控制面板", MessageBoxButton.OK, MessageBoxImage.Error);
             // Hosted runners without an audio device cannot exercise actual playback.
-            if (args.Contains("--playback-test") && HasAudioDeviceError(ex)) return 2;
+            if ((args.Contains("--playback-test") || args.Contains("--codex-playback-test")) && HasAudioDeviceError(ex)) return 2;
             return 1;
         }
     }
@@ -121,30 +140,33 @@ static class Program
         return false;
     }
     // Exercise real MediaPlayer completion events and the full reply chain on Windows.
-    static int PlaybackTest(Dictionary<string, List<Clip>> allClips)
+    static int PlaybackTest(Dictionary<string, List<Clip>> allClips, bool codex = false)
     {
         var testRoot = Path.Combine(Path.GetTempPath(), "ShaolanPet-playback-test-" + Guid.NewGuid());
         SettingsRoot = testRoot;
         try
         {
             var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
-            var panel = new ControlPanel(allClips);
+            var panel = new ControlPanel(allClips, startWatcher: false);
             var heard = new List<string>();
             Exception? failure = null;
-            var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+            var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(codex ? 60 : 30) };
             timeout.Tick += (_, _) => { timeout.Stop(); failure = new TimeoutException("音频播放或接话超时：" + string.Join(" → ", heard)); panel.Close(); };
             panel.Loaded += (_, _) => {
                 try {
-                    panel.StartPlaybackTest(turn => {
+                    Action<ConversationTurn> onEnded = turn => {
                         heard.Add(turn.Speaker);
-                        if (heard.Count != 4) return;
-                        if (!heard.SequenceEqual(new[] { "shaolan", "sunpet", "fengge", "sunpet" }))
+                        if (heard.Count != (codex ? 2 : 4)) return;
+                        if (!heard.SequenceEqual(codex ? new[] { "sunpet", "sunpet" } : new[] { "shaolan", "sunpet", "fengge", "sunpet" }))
                             failure = new InvalidDataException("接话顺序错误：" + string.Join(" → ", heard));
                         timeout.Stop(); panel.Dispatcher.BeginInvoke(new Action(panel.Close));
-                    }, error => {
+                    };
+                    Action<Exception> onFailure = error => {
                         failure = new InvalidDataException("音频播放失败，已完成：" + string.Join(" → ", heard), error);
                         timeout.Stop(); panel.Dispatcher.BeginInvoke(new Action(panel.Close));
-                    });
+                    };
+                    if (codex) panel.StartCodexPlaybackTest(onEnded, onFailure);
+                    else panel.StartPlaybackTest(onEnded, onFailure);
                     timeout.Start();
                 }
                 catch (Exception e) { failure = e; panel.Close(); }
@@ -195,12 +217,13 @@ static class Program
                 throw new InvalidDataException("轮播筛选失败");
         }
         ConversationTests.Verify();
+        CodexReactionTests.Verify();
         var testRoot = Path.Combine(Path.GetTempPath(), "ShaolanPet-self-test-" + Guid.NewGuid());
         SettingsRoot = testRoot;
         try
         {
             var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
-            var panel = new ControlPanel(allClips);
+            var panel = new ControlPanel(allClips, startWatcher: false);
             Exception? failure = null;
             panel.Loaded += (_, _) => {
                 try { panel.VerifyControls(); }
@@ -228,6 +251,7 @@ sealed class PetWindow : Window
     private ConversationTurn? playingTurn;
     private bool playing;
     private readonly ShuffleBag replyBag = new();
+    private readonly ShuffleBag codexBag = new();
     private readonly Image face = new();
     private readonly TextBlock caption = new();
     private readonly DispatcherTimer captionTimer = new();
@@ -286,6 +310,8 @@ sealed class PetWindow : Window
         SavePosition(); panel.UpdateSize(pet.Id);
     }
     public bool IsPlaying => playing;
+    public bool IsCodexReaction => playing && playingTurn?.Root == "codex";
+    internal int? LastPlayedId => lastPlayed;
     public void StopPlayback()
     {
         if (playingTurn is { } turn) panel.CancelIfCurrent(turn);
@@ -333,7 +359,17 @@ sealed class PetWindow : Window
     {
         if (playingTurn != turn) return;
         playing = false; playingTurn = null; Animate(false);
+        player?.Close(); player = null;
         panel.ConversationEnded(turn);
+    }
+    public bool TryPlayCodexReaction()
+    {
+        if (pet.Id != "sunpet" || playing) return false;
+        var available = clips.Where(c => !settings.ExcludedIds!.Contains(c.Id)).Select(c => c.Id).ToArray();
+        if (available.Length > 1) available = available.Where(id => id != lastPlayed).ToArray();
+        var id = codexBag.Next(available);
+        var clip = clips.FirstOrDefault(c => c.Id == id);
+        return clip != null && StartPlayback(clip, panel.StartCodexReaction());
     }
     public bool PlayReply(ConversationTurn turn)
     {
@@ -351,7 +387,7 @@ sealed class PetWindow : Window
         StopPlayback();
         try
         {
-            if (panel.SimulatedPlayback) { playingTurn = turn; playing = true; return true; }
+            if (panel.SimulatedPlayback) { playingTurn = turn; playing = true; lastPlayed = clip.Id; return true; }
             var nextPlayer = new MediaPlayer();
             player = nextPlayer; playingTurn = turn; playing = true;
             nextPlayer.MediaEnded += (_, _) => {
@@ -361,6 +397,7 @@ sealed class PetWindow : Window
             nextPlayer.MediaFailed += (_, error) => {
                 if (!ReferenceEquals(player, nextPlayer) || playingTurn != turn) return;
                 playing = false; playingTurn = null; Animate(false);
+                nextPlayer.Close(); player = null;
                 panel.CancelIfCurrent(turn); panel.NotifyPlaybackFailed(error.ErrorException); ShowCaption("音频读取失败", 4);
             };
             nextPlayer.Open(new Uri(Path.Combine(pet.AssetDirectory, "Clips", clip.File)));

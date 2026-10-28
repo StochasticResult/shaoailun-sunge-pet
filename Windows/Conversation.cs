@@ -15,9 +15,9 @@ sealed class Conversation
     {
         Enabled = enabled; this.canReply = canReply; this.playReply = playReply;
     }
-    public ConversationTurn Start(string speaker)
+    public ConversationTurn Start(string speaker, bool allowReplies = true)
     {
-        var turn = new ConversationTurn(++generation, speaker, speaker, 0);
+        var turn = new ConversationTurn(++generation, speaker, allowReplies ? speaker : "codex", 0);
         current = turn;
         return turn;
     }
@@ -40,6 +40,38 @@ sealed class Conversation
         var reply = new ConversationTurn(turn.Generation, next, turn.Root, turn.Hop + 1);
         current = reply;
         if (!playReply(reply)) Cancel();
+    }
+}
+
+// Called only on the UI thread. Excess bursts are dropped instead of building a stale backlog.
+sealed class CodexReactionQueue
+{
+    private readonly Queue<string> pending = new();
+    private readonly Queue<string> recent = new();
+    private readonly HashSet<string> seen = new(StringComparer.Ordinal);
+    private readonly Func<bool> canPlay;
+    private readonly Func<bool> play;
+    private bool enabled;
+    public int PendingCount => pending.Count;
+
+    public CodexReactionQueue(bool enabled, Func<bool> canPlay, Func<bool> play)
+    {
+        this.enabled = enabled; this.canPlay = canPlay; this.play = play;
+    }
+    public bool Enqueue(string eventId)
+    {
+        if (!enabled || string.IsNullOrWhiteSpace(eventId) || eventId.Length > 512 || seen.Contains(eventId) || pending.Count >= 16) return false;
+        seen.Add(eventId); recent.Enqueue(eventId); pending.Enqueue(eventId);
+        if (recent.Count > 256) seen.Remove(recent.Dequeue());
+        return true;
+    }
+    public void SetEnabled(bool value) { enabled = value; if (!value) Clear(); }
+    public void Clear() => pending.Clear();
+    public void Drain()
+    {
+        if (!enabled || pending.Count == 0 || !canPlay()) return;
+        pending.Dequeue();
+        play();
     }
 }
 
@@ -67,6 +99,8 @@ static class ConversationTests
         played.Clear();
         var sun = chain.Start("sunpet"); chain.Ended(sun);
         if (played.Count != 0) throw new Exception("太对了起头不应接话");
+        var codex = chain.Start("sunpet", allowReplies: false); chain.Ended(codex); chain.Ended(codex);
+        if (played.Count != 0) throw new Exception("Codex 反应不应接话");
         var old = chain.Start("shaolan");
         var newer = chain.Start("shaolan");
         chain.Ended(old);
