@@ -13,28 +13,21 @@ using Microsoft.Win32.SafeHandles;
 
 namespace ShaolanPet;
 
-// 只观察本机已选聊天的结构化元数据，不读取消息正文或调用 Codex。
+// 配置只在启动时读取；每个聊天独立处理，单个坏源不能阻塞其他源。
 sealed class CodexMessageWatcher : IDisposable
 {
-    private const int MaxLine = 4 * 1024 * 1024;
-    private const string SupportedVersion = "0.165.0-alpha.1.2";
+    private const int MaxChats = 8;
     private readonly Action<string> onHumanMessage;
-    private readonly string sessionsRoot, configPath;
+    private readonly string codexHome, configPath;
     private readonly Func<DateTimeOffset> clock;
     private readonly object gate = new();
     private readonly CancellationTokenSource cancellation = new();
-    private readonly MemoryStream pending = new();
-    private readonly Dictionary<string, bool> turns = new(StringComparer.Ordinal);
-    private readonly Queue<string> turnOrder = new();
-    private readonly HashSet<string> seen = new(StringComparer.Ordinal);
-    private readonly Queue<string> seenOrder = new();
-    private string? threadId, rolloutPath, fileIdentity;
-    private long position;
-    private bool started, disposed, configured, validHeader, skippingLine, awaitingHeader;
-    private long headerLengthAtCheck = -1;
-    private DateTimeOffset startedAt;
+    private readonly List<CodexChatSource> sources = new();
+    private bool configured, selectionWarnings, started, disposed;
 
     public string Status { get; private set; } = "not-started";
+    public int SelectedChatCount { get { lock (gate) return sources.Count; } }
+    public int WatchingChatCount { get { lock (gate) return sources.Count(s => s.Status == "watching-selected-chat"); } }
 
     public CodexMessageWatcher(Action<string> onHumanMessage)
         : this(onHumanMessage,
@@ -45,10 +38,9 @@ sealed class CodexMessageWatcher : IDisposable
     internal CodexMessageWatcher(Action<string> onHumanMessage, string codexHome, string configPath, Func<DateTimeOffset> clock)
     {
         this.onHumanMessage = onHumanMessage;
+        this.codexHome = codexHome;
         this.configPath = configPath;
         this.clock = clock;
-        try { sessionsRoot = Path.GetFullPath(Path.Combine(codexHome, "sessions")); }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { sessionsRoot = ""; }
     }
 
     public void Start()
@@ -68,6 +60,109 @@ sealed class CodexMessageWatcher : IDisposable
                 }
             });
         }
+    }
+
+    internal void PollOnce()
+    {
+        lock (gate)
+        {
+            if (disposed) return;
+            if (!configured)
+            {
+                configured = true;
+                try { LoadSources(); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or JsonException or ArgumentException or NotSupportedException or InvalidOperationException)
+                { Status = "invalid-source-selection"; }
+            }
+            foreach (var source in sources) source.PollOnce();
+            if (sources.Count == 0) return;
+            int watching = sources.Count(s => s.Status == "watching-selected-chat");
+            Status = sources.Count == 1 && !selectionWarnings ? sources[0].Status : watching == 0 ? "selected-chats-unavailable" :
+                watching == sources.Count && !selectionWarnings ? "watching-selected-chats" : "partially-watching-selected-chats";
+        }
+    }
+
+    private void LoadSources()
+    {
+        if (!File.Exists(configPath)) { Status = "source-not-configured"; return; }
+        if (new FileInfo(configPath).Length > 16 * 1024) { Status = "invalid-source-selection"; return; }
+        using var config = JsonDocument.Parse(File.ReadAllBytes(configPath));
+        var root = config.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) { Status = "invalid-source-selection"; return; }
+        var selected = new HashSet<string>(StringComparer.Ordinal);
+        void Add(JsonElement item)
+        {
+            if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("threadId", out var id) || id.ValueKind != JsonValueKind.String || !Guid.TryParse(id.GetString(), out var guid))
+            { selectionWarnings = true; return; }
+            string threadId = guid.ToString("D");
+            if (item.TryGetProperty("rolloutPath", out var path) && path.ValueKind != JsonValueKind.String)
+            { selectionWarnings = true; return; }
+            if (!selected.Add(threadId)) { selectionWarnings = true; return; }
+            sources.Add(new CodexChatSource(onHumanMessage, codexHome, threadId, path.ValueKind == JsonValueKind.String ? path.GetString() : null, clock));
+        }
+        if (root.TryGetProperty("chats", out var chats))
+        {
+            if (chats.ValueKind != JsonValueKind.Array) { Status = "invalid-source-selection"; return; }
+            int count = chats.GetArrayLength();
+            selectionWarnings = count > MaxChats;
+            for (int i = 0; i < Math.Min(count, MaxChats); i++) Add(chats[i]);
+            Status = sources.Count == 0 ? selectionWarnings ? "invalid-source-selection" : "no-selected-chats" : "not-started";
+        }
+        else
+        {
+            Add(root);
+            if (sources.Count == 0) Status = "invalid-source-selection";
+        }
+    }
+
+    // 保留单源安全回归入口；实际每个源仍逐次核验其打开句柄。
+    internal bool IsSafeOpenedSource(FileStream stream)
+    { lock (gate) return sources.Count == 1 && sources[0].IsSafeOpenedSource(stream); }
+
+    public void Dispose()
+    {
+        lock (gate)
+        {
+            if (disposed) return;
+            disposed = true;
+            cancellation.Cancel(); cancellation.Dispose();
+            foreach (var source in sources) source.Dispose();
+            Status = "stopped";
+        }
+    }
+}
+
+// 只观察本机已选聊天的结构化元数据，不读取消息正文或调用 Codex。
+sealed class CodexChatSource : IDisposable
+{
+    private const int MaxLine = 4 * 1024 * 1024;
+    private const string SupportedVersion = "0.165.0-alpha.1.2";
+    private readonly Action<string> onHumanMessage;
+    private readonly string sessionsRoot, selectedThreadId;
+    private readonly string? selectedRolloutPath;
+    private readonly Func<DateTimeOffset> clock;
+    private readonly object gate = new();
+    private readonly MemoryStream pending = new();
+    private readonly Dictionary<string, bool> turns = new(StringComparer.Ordinal);
+    private readonly Queue<string> turnOrder = new();
+    private readonly HashSet<string> seen = new(StringComparer.Ordinal);
+    private readonly Queue<string> seenOrder = new();
+    private string? threadId, rolloutPath, fileIdentity;
+    private long position;
+    private bool disposed, configured, validHeader, skippingLine, awaitingHeader;
+    private long headerLengthAtCheck = -1;
+    private DateTimeOffset startedAt;
+
+    public string Status { get; private set; } = "not-started";
+
+    internal CodexChatSource(Action<string> onHumanMessage, string codexHome, string threadId, string? rolloutPath, Func<DateTimeOffset> clock)
+    {
+        this.onHumanMessage = onHumanMessage;
+        selectedThreadId = threadId;
+        selectedRolloutPath = rolloutPath;
+        this.clock = clock;
+        try { sessionsRoot = Path.GetFullPath(Path.Combine(codexHome, "sessions")); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { sessionsRoot = ""; }
     }
 
     internal void PollOnce()
@@ -133,13 +228,8 @@ sealed class CodexMessageWatcher : IDisposable
     private void LoadSource()
     {
         if (sessionsRoot.Length == 0) { Status = "invalid-sessions-root"; return; }
-        if (!File.Exists(configPath)) { Status = "source-not-configured"; return; }
-        if (new FileInfo(configPath).Length > 16 * 1024) { Status = "invalid-source-selection"; return; }
-        using var config = JsonDocument.Parse(File.ReadAllBytes(configPath));
-        threadId = Text(config.RootElement, "threadId");
-        if (!Guid.TryParse(threadId, out var selectedThread)) { Status = "invalid-source-selection"; return; }
-        threadId = selectedThread.ToString("D");
-        string? selected = Text(config.RootElement, "rolloutPath");
+        threadId = selectedThreadId;
+        string? selected = selectedRolloutPath;
         if (selected == null && Directory.Exists(sessionsRoot))
         {
             var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.ReparsePoint };
@@ -150,7 +240,6 @@ sealed class CodexMessageWatcher : IDisposable
         string full = Path.GetFullPath(selected);
         if (!full.StartsWith(sessionsRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !full.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase))
         { Status = "invalid-source-selection"; return; }
-        if (!SourceHasNoLinks(full)) { Status = "linked-source-rejected"; return; }
         rolloutPath = full;
     }
 
@@ -317,8 +406,6 @@ sealed class CodexMessageWatcher : IDisposable
         {
             if (disposed) return;
             disposed = true;
-            cancellation.Cancel();
-            cancellation.Dispose();
             pending.Dispose();
             turns.Clear(); turnOrder.Clear(); seen.Clear(); seenOrder.Clear();
             Status = "stopped";

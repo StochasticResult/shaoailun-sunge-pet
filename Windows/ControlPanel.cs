@@ -112,7 +112,7 @@ sealed class ControlPanel : Window
         autoReply.Checked += (_, _) => SetAutoReply(true);
         autoReply.Unchecked += (_, _) => SetAutoReply(false);
         page.Children.Add(autoReply);
-        codexReaction = new CheckBox { Content = "Codex 消息联动（所选聊天）", IsChecked = panelSettings.CodexReaction, Margin = new Thickness(2, 4, 0, 6), FontSize = 14, ToolTip = "收到所选本机聊天的新用户消息时，太对了随机回应" };
+        codexReaction = new CheckBox { Content = "Codex 消息联动（指定聊天）", IsChecked = panelSettings.CodexReaction, Margin = new Thickness(2, 4, 0, 6), FontSize = 14, ToolTip = "收到指定本机聊天的新用户消息时，太对了随机回应" };
         codexReaction.Checked += (_, _) => SetCodexReaction(true);
         codexReaction.Unchecked += (_, _) => SetCodexReaction(false);
         page.Children.Add(codexReaction);
@@ -146,12 +146,19 @@ sealed class ControlPanel : Window
     }
     private void UpdateCodexStatus()
     {
-        codexStatus.Text = !panelSettings.CodexReaction ? "消息联动已关闭" : codexWatcher?.Status switch {
-            "watching-selected-chat" => "监听所选本机聊天；太对了空闲时回应",
-            "source-not-configured" or "source-not-found" => "未找到所选聊天的监听配置",
-            "not-started" or null => "等待消息来源",
-            _ => "消息来源暂不可用；桌宠仍可正常使用"
-        };
+        codexStatus.Text = FormatCodexStatus(panelSettings.CodexReaction, codexWatcher?.Status,
+            codexWatcher?.SelectedChatCount ?? 0, codexWatcher?.WatchingChatCount ?? 0);
+    }
+    internal static string FormatCodexStatus(bool enabled, string? status, int selected, int watching)
+    {
+        if (!enabled) return "消息联动已关闭";
+        if (status is null or "not-started") return "等待消息来源";
+        if (selected == 0) return "未找到有效的聊天监听配置";
+        if (status == "partially-watching-selected-chats" && watching == selected)
+            return $"正在监听 {watching} 个指定聊天；部分配置未接受";
+        if (watching == selected && status is "watching-selected-chat" or "watching-selected-chats") return $"正在监听 {watching} 个指定聊天";
+        if (watching > 0) return $"已配置 {selected} 个聊天，正在监听 {watching} 个；部分未就绪";
+        return $"已配置 {selected} 个聊天，当前未监听；请检查来源或重新开启联动";
     }
     private void SavePanelSettings()
     {
@@ -280,6 +287,12 @@ sealed class ControlPanel : Window
     // Called by --self-test with an isolated settings directory on a Windows runner.
     public void VerifyControls()
     {
+        if (!FormatCodexStatus(true, "watching-selected-chats", 2, 2).Contains("监听 2") ||
+            !FormatCodexStatus(true, "partially-watching-selected-chats", 2, 1).Contains("部分未就绪") ||
+            !FormatCodexStatus(true, "partially-watching-selected-chats", 2, 2).Contains("部分配置未接受") ||
+            !FormatCodexStatus(true, "source-unavailable", 2, 0).Contains("当前未监听") ||
+            !FormatCodexStatus(false, "watching-selected-chat", 2, 2).Contains("已关闭"))
+            throw new InvalidDataException("Codex 监听数量状态错误");
         if (windows.Count != Program.Pets.Length) throw new InvalidDataException("桌宠未全部启动");
         if (!JsonSerializer.Deserialize<PanelSettings>("{\"AutoReply\":false}", Program.JsonOptions)!.CodexReaction)
             throw new InvalidDataException("旧设置未默认开启 Codex 反应");

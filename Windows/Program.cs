@@ -102,8 +102,10 @@ static class Program
                 Console.WriteLine(JsonSerializer.Serialize(new {
                     version = typeof(Program).Assembly.GetName().Version?.ToString(),
                     codexReactionEnabled = ControlPanel.LoadPanelSettings().CodexReaction,
-                    scope = "selected local Codex Desktop chat only",
+                    scope = "selected local Codex Desktop chats only",
                     sourceProbeStatus = source.Status,
+                    selectedChatCount = source.SelectedChatCount,
+                    watchingChatCount = source.WatchingChatCount,
                     mode = "one-shot metadata probe; running app is not queried"
                 }, JsonOptions));
                 return 0;

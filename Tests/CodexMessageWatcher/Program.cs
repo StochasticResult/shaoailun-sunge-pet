@@ -3,7 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using ShaolanPet;
 
-static class WatcherTests
+static partial class WatcherTests
 {
     const string ThreadId = "00000000-0000-0000-0000-000000000001";
     static readonly DateTimeOffset Now = DateTimeOffset.UtcNow;
@@ -14,7 +14,7 @@ static class WatcherTests
         if (!value) throw new Exception(name);
     }
     static string Json(object value) => JsonSerializer.Serialize(value);
-    static string Header(string version = "0.165.0-alpha.1.2") => Json(new { type = "session_meta", payload = new { id = ThreadId, originator = "Codex Desktop", cli_version = version } });
+    static string Header(string version = "0.165.0-alpha.1.2", string thread = ThreadId) => Json(new { type = "session_meta", payload = new { id = thread, originator = "Codex Desktop", cli_version = version } });
     static string Turn(string id = "turn-a", string trigger = "composer") => Json(new { type = "event_msg", payload = new { type = "task_started", turn_id = id, turn_attribution = new { turn_id = id, turn_trigger = trigger, initiating_agent_path = (string?)null, parent_turn_id = (string?)null } } });
     static string Message(string id, string turn = "turn-a", string kind = "user.text", string provenance = "user", double? time = null, bool metadata = true, string type = "message", string role = "user") => Json(new { timestamp = Now.ToString("O"), type = "response_item", payload = new { id, type, role, content = new[] { new { type = "input_text", text = "synthetic fixture" } }, internal_chat_message_metadata_passthrough = metadata ? new { turn_id = turn, create_time = time ?? Now.ToUnixTimeMilliseconds() / 1000.0, content_item_kinds = new[] { kind }, content_item_metadata = new[] { new { provenance = new { type = provenance } } } } : null } });
 
@@ -78,6 +78,7 @@ static class WatcherTests
         Directory.CreateDirectory(Path.Combine(root, "sessions"));
         try
         {
+            if (args.Contains("--multichat")) { MultiChatRegression(root); Console.WriteLine($"PASS: {assertions} multichat assertions"); return 0; }
             if (args.Contains("--review-link")) { ReviewPathRegression(root); Console.WriteLine($"PASS: {assertions} path regression assertions"); return 0; }
             if (args.Contains("--review-header")) { ReviewHeaderRegression(root); Console.WriteLine($"PASS: {assertions} header regression assertions"); return 0; }
             string file = Path.Combine(root, "sessions", "rollout.jsonl"), config = Path.Combine(root, "source.json");
@@ -163,6 +164,7 @@ static class WatcherTests
             Check(burstIds.Count == 34, "thread-only configuration resolves exact filename");
             ReviewPathRegression(root);
             ReviewHeaderRegression(root);
+            MultiChatRegression(root);
             Console.WriteLine($"PASS: {assertions} collector assertions");
             return 0;
         }
